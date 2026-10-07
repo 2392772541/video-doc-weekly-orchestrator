@@ -1,0 +1,4 @@
+interface:
+  display_name: "水球泡周报一条龙"
+  short_description: "从录屏制作完整周报，核验原作品并收藏到抖音和B站，保留断点与跨期检索"
+  default_prompt: "使用 $video-doc-weekly-orchestrator 制作本期水球泡周报，核验原视频链接，发布飞书后收藏到抖音和B站，并更新搜索索引。"

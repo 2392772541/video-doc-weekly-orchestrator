@@ -1,0 +1,66 @@
+{
+  "title": "示例格式，不是正式周报 Vol.EXAMPLE",
+  "source_week": "填写本期日期",
+  "numbered_item_count": 2,
+  "quick_news_count": 1,
+  "items": [
+    {
+      "key": "video-1",
+      "section": "视频",
+      "number": 1,
+      "title": "来源逐字/准确还原的标题",
+      "body": "真实原文摘要，没有则留空",
+      "kind": "video",
+      "url": "https://www.douyin.com/video/REPLACE_WITH_OBSERVED_19_DIGIT_ID"
+    },
+    {
+      "key": "essay-1",
+      "section": "随笔",
+      "number": 1,
+      "title": "来源中的纯文字条目",
+      "kind": "plain",
+      "body": "完整原文"
+    },
+    {
+      "key": "news-1",
+      "section": "快讯",
+      "number": null,
+      "title": "来源中的未编号快讯",
+      "kind": "quick_news",
+      "body": "完整原文"
+    }
+  ],
+  "layout": [
+    {
+      "type": "paragraph",
+      "text": "此处替换为当期前言，不应直接删除。"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "视频"
+    },
+    {
+      "type": "item",
+      "key": "video-1"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "随笔"
+    },
+    {
+      "type": "item",
+      "key": "essay-1"
+    },
+    {
+      "type": "heading",
+      "level": 2,
+      "text": "快讯"
+    },
+    {
+      "type": "item",
+      "key": "news-1"
+    }
+  ]
+}

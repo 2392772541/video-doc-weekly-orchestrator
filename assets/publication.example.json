@@ -1,0 +1,12 @@
+{
+  "account_id": "REPLACE_CURRENT_ACCOUNT",
+  "folder_id": "REPLACE_FOLDER_ID",
+  "checked_at": "REPLACE_ACTUAL_ISO8601",
+  "document_file": "evidence/actual-published-fetch.json",
+  "folder_file": "evidence/actual-published-folder.json",
+  "style_reviewed": false,
+  "style_evidence_files": [
+    "evidence/actual-published-style.png"
+  ],
+  "document_url": "REPLACE_ACTUAL_URL"
+}

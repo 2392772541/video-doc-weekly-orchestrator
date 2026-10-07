@@ -1,0 +1,31 @@
+{
+  "snapshot_id": "REPLACE_NEW_OBSERVATION_ID",
+  "method": "ui",
+  "platform": "douyin",
+  "account_id": "REPLACE_CURRENT_ACCOUNT",
+  "folder_id": "REPLACE_STRING_ID",
+  "folder_name": "水球泡视频周报",
+  "started_at": "REPLACE_ACTUAL_ISO8601",
+  "finished_at": "REPLACE_ACTUAL_ISO8601",
+  "pages": [
+    {
+      "request_cursor": "ui-1",
+      "has_more": false,
+      "next_cursor": null,
+      "target_visible": false,
+      "fully_loaded": false,
+      "end_visible": false,
+      "items": [
+        {
+          "id": "REPLACE_OBSERVED_STRING_ID"
+        }
+      ],
+      "evidence_files": [
+        "evidence/actual-folder-page-1.json"
+      ]
+    }
+  ],
+  "evidence_files": [
+    "evidence/actual-folder-round.json"
+  ]
+}

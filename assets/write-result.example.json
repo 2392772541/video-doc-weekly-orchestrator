@@ -1,0 +1,7 @@
+{
+  "outcome": "uncertain",
+  "detail": "仅格式示例；填写实际写入结果，默认未知，不构造业务码",
+  "evidence_files": [
+    "evidence/actual-write-response.json"
+  ]
+}

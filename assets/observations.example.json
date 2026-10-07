@@ -1,0 +1,78 @@
+[
+  {
+    "type": "permissions",
+    "publish": false,
+    "collect": [],
+    "user_request": "示例：填写当前用户实际授权，示例本身不授权"
+  },
+  {
+    "type": "register_source",
+    "source_id": "source-current",
+    "kind": "feishu",
+    "document_id": "REPLACE_FROM_FETCH",
+    "revision_id": "REPLACE_FROM_FETCH",
+    "checked_at": "REPLACE_ACTUAL_ISO8601",
+    "evidence_files": [
+      "evidence/actual-source-fetch.json"
+    ]
+  },
+  {
+    "type": "source",
+    "key": "video-1",
+    "source_id": "source-current",
+    "item_title": "与条目完全一致的标题",
+    "ownership": "same_item",
+    "observed_url": "REPLACE_OBSERVED_SAME_ITEM_URL",
+    "author": "有真实来源作者才填",
+    "revision_id": "REPLACE_FROM_FETCH",
+    "evidence_files": [
+      "evidence/actual-source-item.json"
+    ]
+  },
+  {
+    "type": "candidate",
+    "key": "video-1",
+    "url": "REPLACE_CANDIDATE_URL",
+    "title": "候选标题",
+    "author": "候选实际作者",
+    "match_type": "needs_review",
+    "reason": "尚未原作核验",
+    "evidence_files": [
+      "evidence/actual-search.json"
+    ]
+  },
+  {
+    "type": "verify",
+    "key": "video-1",
+    "url": "REPLACE_CANONICAL_URL",
+    "observed_title": "详情实际标题",
+    "observed_author": "详情实际作者",
+    "identity": {
+      "method": "source_url",
+      "same_work": false,
+      "title_match": false,
+      "reason": "示例默认未核验；不得把false直接改true过门禁"
+    },
+    "availability": {
+      "status": "unreviewed",
+      "checked_at": "REPLACE_ACTUAL_ISO8601",
+      "method": "ui",
+      "detail_visible": false,
+      "unavailable_banner": true,
+      "observed_id": "REPLACE_OBSERVED_ID"
+    },
+    "evidence_files": [
+      "evidence/actual-detail.json"
+    ]
+  },
+  {
+    "type": "inventory",
+    "expected_numbered": 2,
+    "expected_quick_news": 1,
+    "all_source_parts_reviewed": false,
+    "layout_reviewed": false,
+    "evidence_files": [
+      "evidence/actual-full-source-review.json"
+    ]
+  }
+]

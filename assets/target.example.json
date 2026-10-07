@@ -1,0 +1,22 @@
+[
+  {
+    "type": "target",
+    "platform": "douyin",
+    "account_id": "REPLACE_CURRENT_ACCOUNT",
+    "authenticated": false,
+    "complete": false,
+    "checked_at": "REPLACE_ACTUAL_ISO8601",
+    "desired_name": "水球泡视频周报",
+    "folders": [
+      {
+        "name": "水球泡视频周报",
+        "collects_id_str": "REPLACE_ORIGINAL_STRING_ID",
+        "url": "REPLACE_OBSERVED_FOLDER_URL"
+      }
+    ],
+    "allow_empty_initial": false,
+    "evidence_files": [
+      "evidence/actual-folder-discovery.json"
+    ]
+  }
+]
