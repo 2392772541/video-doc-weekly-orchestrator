@@ -642,6 +642,7 @@ def build_report(state):
     callout = ET.SubElement(root, "callout", emoji="💡")
     ET.SubElement(callout, "p").text = CALLOUT
     md = ["# " + state["issue"]["title"], "", "> " + CALLOUT, ""]
+    image_owner_keys = {x.get("owner_key") for x in state.get("layout", []) if x.get("type") == "image"}
     for b in state["layout"]:
         if b["type"] == "heading":
             ET.SubElement(root, "h" + str(b["level"])).text = b["text"]
@@ -685,7 +686,7 @@ def build_report(state):
                 p_cand.text = "候选链接（待核验）："
                 ET.SubElement(p_cand, "a", href=it["candidate_url"]).text = it["candidate_url"]
                 md.append(cand_notice)
-            if it.get("screenshot"):
+            if it.get("screenshot") and b["key"] not in image_owner_keys:
                 p_shot = ET.SubElement(root, "p")
                 p_shot.text = "【原录像截图核验参考：" + it["screenshot"] + "】"
                 md.append("【原录像截图核验参考：" + it["screenshot"] + "】")

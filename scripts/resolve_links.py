@@ -216,6 +216,47 @@ def capture_screenshots_for_run(run_dir: Path, state: dict, keys: list[str] | No
     return {"total_captured": len(captured), "captured": captured}
 
 
+
+def embed_captured_screenshots_into_layout(run_dir: Path, state: dict, receipts: dict) -> dict:
+    """Embeds uploaded screenshots into state layout as first-class image blocks."""
+    run_dir = Path(run_dir).resolve()
+    items = state.get("items", [])
+    old_layout = [b for b in state.get("layout", []) if b.get("type") != "image"]
+    new_layout = []
+    embedded_count = 0
+
+    for b in old_layout:
+        new_layout.append(b)
+        if b.get("type") == "item":
+            k = b.get("key")
+            if k in receipts:
+                rec = receipts[k]
+                token = rec.get("file_token") or rec.get("token") or rec.get("src")
+                rel_file = rec.get("file") or rec.get("screenshot")
+                if token and rel_file:
+                    file_p = run_dir / rel_file
+                    sha = hashlib.sha256(file_p.read_bytes()).hexdigest() if file_p.is_file() else ""
+                    img_block = {
+                        "type": "image",
+                        "owner_key": k,
+                        "src": token,
+                        "caption": rec.get("caption") or "【原周报视频录像截图对照】",
+                        "evidence": [{"path": rel_file, "sha256": sha}] if sha else []
+                    }
+                    new_layout.append(img_block)
+                    embedded_count += 1
+                    it = w.get_item(state, k)
+                    if it:
+                        it["screenshot"] = rel_file
+
+    state["layout"] = new_layout
+    inv = state.get("inventory", {})
+    if "review" in inv and inv["review"]:
+        inv_keys = [i["key"] for i in items]
+        inv["review"]["binding"] = w.digest({"layout": state["layout"], "inventory": inv_keys})
+
+    return {"embedded_count": embedded_count, "layout_blocks": len(new_layout)}
+
 def scan_and_report_issues(manifest_data: dict) -> dict:
     items = manifest_data.get("items", [])
     unresolved = []
