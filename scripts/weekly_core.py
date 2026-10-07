@@ -307,6 +307,9 @@ def audit(state, run, at=None):
             if b["type"] == "image":
                 require(isinstance(b.get("src"), str) and re.fullmatch(r"[A-Za-z0-9_-]{8,200}", b["src"]), "image_requires_real_feishu_src_token")
                 require(b.get("owner_key") in {i["key"] for i in items}, "image_owner_required")
+                owner_item = next((i for i in items if i["key"] == b["owner_key"]), None)
+                if owner_item and owner_item.get("canonical_url") and (owner_item.get("screenshot") or "录像截图对照" in b.get("caption", "")):
+                    require(False, f"item_with_url_must_not_have_screenshot:{b['owner_key']}")
                 position = state["layout"].index(b)
                 preceding = [x["key"] for x in state["layout"][:position] if x["type"] == "item"]
                 require(preceding and preceding[-1] == b["owner_key"], "image_must_follow_owning_item")
@@ -320,6 +323,8 @@ def audit(state, run, at=None):
         if it["kind"] != "quick_news" and n in numbering:
             errors.append({"item": it["key"], "error": "duplicate_number_in_section"})
         numbering.add(n)
+        if it.get("canonical_url") and it.get("screenshot"):
+            errors.append({"item": it["key"], "error": f"item_with_url_must_not_have_screenshot:{it['key']}"})
         if it.get("exception"):
             exceptions.append(it["key"])
             check(it["key"], lambda it=it: validate_source(state, run, it))
@@ -643,8 +648,10 @@ def build_report(state):
     ET.SubElement(callout, "p").text = CALLOUT
     md = ["# " + state["issue"]["title"], "", "> " + CALLOUT, ""]
     image_owner_keys = {x.get("owner_key") for x in state.get("layout", []) if x.get("type") == "image"}
+    current_level = 2
     for b in state["layout"]:
         if b["type"] == "heading":
+            current_level = b["level"]
             ET.SubElement(root, "h" + str(b["level"])).text = b["text"]
             md.extend(["#" * b["level"] + " " + b["text"], ""])
         elif b["type"] == "paragraph":
@@ -665,14 +672,15 @@ def build_report(state):
         else:
             it = get_item(state, b["key"])
             label = (str(it["number"]) + ". " if it["number"] is not None else "") + it["title"]
-            p = ET.SubElement(root, "p")
+            item_level = min(current_level + 1, 6)
+            h = ET.SubElement(root, "h" + str(item_level))
             if it["kind"] == "video":
-                p.text = label
-                md.append(label)
+                h.text = label
+                md.append("#" * item_level + " " + label)
             else:
-                bold = ET.SubElement(p, "b")
+                bold = ET.SubElement(h, "b")
                 ET.SubElement(bold, "span", {"text-color": "red"}).text = label
-                md.append('<b><span style="color:#d83931">' + html.escape(label) + '</span></b>')
+                md.append("#" * item_level + ' <b><span style="color:#d83931">' + html.escape(label) + '</span></b>')
             if it.get("exception"):
                 notice = "原作品未确认，未替代、未收藏：" + it["exception"]["reason"]
                 ET.SubElement(root, "p").text = notice
