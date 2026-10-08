@@ -1399,6 +1399,108 @@ class ResolveLinksAndCollectRunnerTests(unittest.TestCase):
         self.assertIn(".NWh9vMMV", js)
         self.assertIn("ui_confirmed", js)
 
+
+    def test_extract_candidate_urls_from_ocr_lines(self):
+        import resolve_links
+        lines = [
+            "  https: // www.douyin.com / video / 7690961433315826043  ",
+            "前沿科学讨论，https://www.bilibili.com/video/BV16vHt6BERB 视频",
+            "截断链接：https://www.douyin.com/video/76908253275 待恢复",
+            "纯BV号 BV16sYx6oEPJ 供参考"
+        ]
+        cands = resolve_links.extract_candidate_urls_from_ocr_lines(lines)
+        urls = {c["url"] for c in cands}
+        self.assertIn("https://www.douyin.com/video/7690961433315826043", urls)
+        self.assertIn("https://www.bilibili.com/video/BV16vHt6BERB", urls)
+        self.assertIn("https://www.bilibili.com/video/BV16sYx6oEPJ", urls)
+        self.assertIn("https://www.douyin.com/video/76908253275", urls)
+
+    def test_verify_candidate_for_item_prefix_and_dedup(self):
+        import resolve_links
+        item = {
+            "key": "test-1",
+            "title": "脑洞科普：颠覆认知的生命科学",
+            "url": "https://www.douyin.com/video/76909614333"
+        }
+        cand_match = {
+            "platform": "douyin",
+            "id": "7690961433315826043",
+            "url": "https://www.douyin.com/video/7690961433315826043",
+            "raw": "https://www.douyin.com/video/7690961433315826043"
+        }
+        res = resolve_links.verify_candidate_for_item(item, cand_match, existing_ids=set())
+        self.assertTrue(res["matched"])
+        self.assertEqual(res["method"], "screenshot_ocr_prefix_match")
+        self.assertEqual(res["id"], "7690961433315826043")
+
+        # Deduplication rejection if id belongs to another item
+        res_dup = resolve_links.verify_candidate_for_item(item, cand_match, existing_ids={"7690961433315826043"})
+        self.assertFalse(res_dup["matched"])
+        self.assertIn("id_already_used", res_dup["reason"])
+
+        # Mismatch prefix rejection
+        cand_other = {
+            "platform": "douyin",
+            "id": "7688888888888888888",
+            "url": "https://www.douyin.com/video/7688888888888888888",
+            "raw": "other url"
+        }
+        res_other = resolve_links.verify_candidate_for_item(item, cand_other, existing_ids=set())
+        self.assertFalse(res_other["matched"])
+
+    def test_auto_heal_from_screenshots_mutual_exclusion(self):
+        import resolve_links
+        import weekly_core as w
+        with tempfile.TemporaryDirectory() as td:
+            run_dir = Path(td)
+            sc_dir = run_dir / "evidence" / "screenshots"
+            sc_dir.mkdir(parents=True, exist_ok=True)
+            
+            sc_file = sc_dir / "test_item_100s.jpg"
+            sc_file.write_bytes(b"fake_jpg")
+
+            state = {
+                "items": [
+                    {
+                        "key": "test-item",
+                        "title": "测试条目",
+                        "url": "https://www.douyin.com/video/76909614333",
+                        "screenshot": "evidence/screenshots/test_item_100s.jpg",
+                        "exception": {"reason": "missing_link"}
+                    }
+                ],
+                "layout": [
+                    {"type": "item", "key": "test-item"},
+                    {"type": "image", "owner_key": "test-item", "src": "fake_token_123", "caption": "截图"}
+                ],
+                "inventory": {
+                    "review": {"binding": ""}
+                }
+            }
+
+            orig_scan = resolve_links.scan_screenshot_for_urls
+            try:
+                resolve_links.scan_screenshot_for_urls = lambda path: [
+                    {"platform": "douyin", "id": "7690961433315826043", "url": "https://www.douyin.com/video/7690961433315826043", "raw": "mock", "type": "full_douyin"}
+                ]
+                h_res = resolve_links.auto_heal_from_screenshots(run_dir, state)
+                self.assertEqual(h_res["healed_count"], 1)
+                item = state["items"][0]
+                self.assertEqual(item["canonical_url"], "https://www.douyin.com/video/7690961433315826043")
+                self.assertEqual(item["kind"], "video")
+                self.assertNotIn("exception", item)
+                self.assertNotIn("screenshot", item)
+                
+                # Check layout mutual exclusion: image block removed
+                img_blocks = [b for b in state["layout"] if b.get("type") == "image"]
+                self.assertEqual(len(img_blocks), 0)
+                
+                # Check binding updated
+                expected_binding = w.digest({"layout": state["layout"], "inventory": ["test-item"]})
+                self.assertEqual(state["inventory"]["review"]["binding"], expected_binding)
+            finally:
+                resolve_links.scan_screenshot_for_urls = orig_scan
+
 if __name__ == "__main__":
 
     unittest.main(verbosity=2)

@@ -144,3 +144,13 @@ python scripts/weekly.py search --catalog ~/.weekly-library/catalog.sqlite --que
 ## 5. 开源协议与维护
 - Maintainer: 2392772541
 - License: MIT / Private Personal Automation Pipeline
+
+## 自动识链自愈与截图扫描 (Auto-Heal Engine)
+针对周报制作过程中“原视频画面印有链接但文字排版截断或漏识”的问题，本技能集成了基于 RapidOCR 的自动识链与互斥排版自愈能力：
+```bash
+# 扫描截图中印制的完整链接并自动补全升级条目，清除多余图片块
+python scripts/weekly.py auto-heal --run <run_dir>
+
+# 仅扫描图片中的视频链接
+python scripts/weekly.py scan-screenshots --run <run_dir>
+```

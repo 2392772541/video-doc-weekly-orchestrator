@@ -16,6 +16,92 @@ DOUYIN_TRUNCATED_RE = re.compile(r"https?://(?:www\.)?douyin\.com/(?:video|note)
 DOUYIN_FULL_RE = re.compile(r"https?://(?:www\.)?douyin\.com/(?:video|note)/([0-9]{19})/?")
 BVID_RE = re.compile(r"BV[A-Za-z0-9]{10}")
 
+_OCR_ENGINE = None
+
+
+def get_ocr_engine():
+    """Initializes and returns cached RapidOCR instance when available."""
+    global _OCR_ENGINE
+    if _OCR_ENGINE is None:
+        try:
+            from rapidocr_onnxruntime import RapidOCR
+            _OCR_ENGINE = RapidOCR()
+        except Exception:
+            _OCR_ENGINE = False
+    return _OCR_ENGINE if _OCR_ENGINE is not False else None
+
+
+def extract_candidate_urls_from_ocr_lines(lines: list[str]) -> list[dict]:
+    """Extract candidate video URLs and IDs from raw OCR lines, cleaning whitespace and normalizing patterns."""
+    candidates = []
+    seen = set()
+    for line in lines:
+        raw = line.strip()
+        if not raw:
+            continue
+        compacted = re.sub(r"https?\s*:\s*/\s*/\s*", "https://", raw)
+        compacted = re.sub(r"\s+", "", compacted)
+
+        # 1. Full Douyin 19 digits
+        for m in re.finditer(r"https?://(?:www\.)?douyin\.com/(?:video|note)/([0-9]{19})", compacted):
+            vid = m.group(1)
+            url = f"https://www.douyin.com/video/{vid}"
+            if url not in seen:
+                seen.add(url)
+                candidates.append({"platform": "douyin", "id": vid, "url": url, "raw": raw, "type": "full_douyin"})
+
+        # 2. Truncated Douyin 11-18 digits (only if prefix not already covered by full 19-digit)
+        for m in re.finditer(r"https?://(?:www\.)?douyin\.com/(?:video|note)/([0-9]{11,18})", compacted):
+            vid = m.group(1)
+            if not any(c["platform"] == "douyin" and c["id"].startswith(vid) for c in candidates):
+                url = f"https://www.douyin.com/video/{vid}"
+                if url not in seen:
+                    seen.add(url)
+                    candidates.append({"platform": "douyin", "id": vid, "url": url, "raw": raw, "type": "truncated_douyin"})
+
+        # 3. Bilibili BV URL
+        for m in re.finditer(r"https?://(?:www\.)?bilibili\.com/video/(BV[A-Za-z0-9]{10})", compacted):
+            bvid = m.group(1)
+            url = f"https://www.bilibili.com/video/{bvid}"
+            if bvid not in seen:
+                seen.add(bvid)
+                candidates.append({"platform": "bilibili", "id": bvid, "url": url, "raw": raw, "type": "full_bilibili"})
+
+        # 4. Standalone BV code
+        for m in re.finditer(r"\b(BV[A-Za-z0-9]{10})\b", raw):
+            bvid = m.group(1)
+            url = f"https://www.bilibili.com/video/{bvid}"
+            if bvid not in seen:
+                seen.add(bvid)
+                candidates.append({"platform": "bilibili", "id": bvid, "url": url, "raw": raw, "type": "bvid_text"})
+
+        # 5. Standalone Douyin 19-digit ID
+        for m in re.finditer(r"\b([0-9]{19})\b", compacted):
+            vid = m.group(1)
+            url = f"https://www.douyin.com/video/{vid}"
+            if url not in seen:
+                seen.add(url)
+                candidates.append({"platform": "douyin", "id": vid, "url": url, "raw": raw, "type": "douyin_id_text"})
+    return candidates
+
+
+def scan_screenshot_for_urls(image_path: Path | str) -> list[dict]:
+    """Scans an image using RapidOCR and extracts candidate video URLs and IDs."""
+    img_p = Path(image_path)
+    if not img_p.is_file():
+        return []
+    engine = get_ocr_engine()
+    if not engine:
+        return []
+    try:
+        result, _ = engine(str(img_p))
+        if not result:
+            return []
+        lines = [x[1] for x in result if len(x) >= 2 and isinstance(x[1], str)]
+        return extract_candidate_urls_from_ocr_lines(lines)
+    except Exception:
+        return []
+
 def inspect_item_url_health(item: dict) -> dict:
     url = (item.get("url") or item.get("original_url") or "").strip()
     title = (item.get("title") or "").strip()
@@ -257,6 +343,141 @@ def embed_captured_screenshots_into_layout(run_dir: Path, state: dict, receipts:
 
     return {"embedded_count": embedded_count, "layout_blocks": len(new_layout)}
 
+
+def verify_candidate_for_item(item: dict, candidate: dict, existing_ids: set) -> dict:
+    """Checks if an OCR candidate URL belongs to this specific item using prefix matching or title correlation."""
+    cid = candidate.get("id")
+    plat = candidate.get("platform")
+    if not cid or not plat:
+        return {"matched": False, "reason": "missing_id_or_platform"}
+    if cid in existing_ids:
+        return {"matched": False, "reason": f"id_already_used_by_another_item: {cid}"}
+
+    orig_url = (item.get("url") or item.get("original_url") or "").strip()
+    m_trunc = re.search(r"douyin\.com/(?:video|note)/([0-9]{11,18})", orig_url)
+    if m_trunc and plat == "douyin":
+        trunc_digits = m_trunc.group(1)
+        if cid.startswith(trunc_digits):
+            return {
+                "matched": True,
+                "method": "screenshot_ocr_prefix_match",
+                "resolved_url": candidate["url"],
+                "platform": plat,
+                "id": cid,
+                "confidence": 1.0,
+                "reason": f"Screenshot OCR 19-digit ID {cid} matched 11-digit prefix {trunc_digits}"
+            }
+
+    item_title = item.get("title", "")
+    clean_item_title = re.sub(r"^\d+[\.、\s]", "", item_title).strip()
+    clean_item_title_core = re.sub(r"[^\w\u4e00-\u9fff]", "", clean_item_title)
+    raw = candidate.get("raw", "")
+    clean_raw = re.sub(r"[^\w\u4e00-\u9fff]", "", raw)
+    if clean_item_title_core and len(clean_item_title_core) >= 4:
+        if clean_item_title_core in clean_raw or clean_raw in clean_item_title_core:
+            return {
+                "matched": True,
+                "method": "screenshot_ocr_title_match",
+                "resolved_url": candidate["url"],
+                "platform": plat,
+                "id": cid,
+                "confidence": 0.9,
+                "reason": f"Screenshot OCR URL near matching title: {clean_item_title}"
+            }
+
+    return {"matched": False, "reason": "no_prefix_or_title_match"}
+
+
+def auto_heal_from_screenshots(run_dir: Path, state: dict, keys: list[str] | None = None) -> dict:
+    """Scans screenshots of unresolved items via OCR, extracts genuine URLs, upgrades items and removes redundant image blocks."""
+    run_dir = Path(run_dir).resolve()
+    items = state.get("items", [])
+    target_keys = set(keys) if keys else None
+
+    existing_ids = {it.get("id") for it in items if it.get("id") and not it.get("exception")}
+
+    healed = []
+    skipped = []
+    sc_dir = run_dir / "evidence" / "screenshots"
+
+    for it in items:
+        k = it.get("key")
+        if target_keys and k not in target_keys:
+            continue
+        needs_healing = bool(it.get("exception")) or not bool(it.get("canonical_url")) or bool(it.get("candidate_url")) or bool(it.get("candidates")) or inspect_item_url_health(it)["issue"] in ("douyin_truncated_id", "missing_url")
+        if not needs_healing:
+            continue
+
+        possible_scs = []
+        if it.get("screenshot"):
+            sc_p = run_dir / it["screenshot"]
+            if sc_p.is_file():
+                possible_scs.append(sc_p)
+
+        safe_key = re.sub(r"[^\w\-]", "_", k)
+        if sc_dir.is_dir():
+            for f in sc_dir.glob(f"{safe_key}_*.jpg"):
+                if f not in possible_scs:
+                    possible_scs.append(f)
+
+        if not possible_scs:
+            cap_rel = capture_item_screenshot(run_dir, it, state.get("sources"))
+            if cap_rel:
+                possible_scs.append(run_dir / cap_rel)
+
+        item_healed = False
+        for sc_file in possible_scs:
+            cands = scan_screenshot_for_urls(sc_file)
+            for cand in cands:
+                ver = verify_candidate_for_item(it, cand, existing_ids)
+                if ver.get("matched"):
+                    cid = ver["id"]
+                    cplat = ver["platform"]
+                    curl = ver["resolved_url"]
+
+                    it["canonical_url"] = curl
+                    it["url"] = curl
+                    it["id"] = cid
+                    it["platform"] = cplat
+                    it["kind"] = "video" if cplat in ("douyin", "bilibili") else "link"
+                    it["resolved_by"] = ver["method"]
+                    it.pop("exception", None)
+                    it.pop("screenshot", None)
+                    it.pop("candidates", None)
+                    it.pop("candidate_url", None)
+                    existing_ids.add(cid)
+
+                    # Strictly enforce mutual exclusion: remove screenshot image blocks for items with links
+                    state["layout"] = [b for b in state.get("layout", []) if not (b.get("type") == "image" and b.get("owner_key") == k)]
+
+                    healed.append({
+                        "key": k,
+                        "title": it.get("title"),
+                        "resolved_url": curl,
+                        "platform": cplat,
+                        "method": ver["method"],
+                        "screenshot": str(sc_file.relative_to(run_dir))
+                    })
+                    item_healed = True
+                    break
+            if item_healed:
+                break
+        if not item_healed:
+            skipped.append(k)
+
+    if healed:
+        inv = state.get("inventory", {})
+        if "review" in inv and inv["review"]:
+            inv_keys = [i["key"] for i in items]
+            inv["review"]["binding"] = w.digest({"layout": state["layout"], "inventory": inv_keys})
+
+    return {
+        "healed_count": len(healed),
+        "healed_items": healed,
+        "unresolved_remaining": len(skipped),
+        "skipped_keys": skipped
+    }
+
 def scan_and_report_issues(manifest_data: dict) -> dict:
     items = manifest_data.get("items", [])
     unresolved = []
@@ -288,7 +509,24 @@ def main():
     parser.add_argument("--manifest", type=Path, required=True, help="Path to manifest or seed json")
     parser.add_argument("--output", type=Path, help="Path to output report json")
     parser.add_argument("--apply-resolutions", type=Path, help="Path to json mapping key/title to resolved URL")
+    parser.add_argument("--auto-heal", type=Path, help="Path to run directory to perform screenshot OCR auto-heal")
+    parser.add_argument("--scan-screenshots", nargs="*", help="Image paths to scan for embedded video URLs")
     args = parser.parse_args()
+
+    if args.scan_screenshots:
+        all_sc_cands = {}
+        for img in args.scan_screenshots:
+            all_sc_cands[img] = scan_screenshot_for_urls(img)
+        print(json.dumps(all_sc_cands, ensure_ascii=False, indent=2))
+        return
+
+    if args.auto_heal:
+        run_d = args.auto_heal.resolve()
+        st = w.read_json(run_d / "run.json")
+        h_res = auto_heal_from_screenshots(run_d, st)
+        w.write_json(run_d / "run.json", st)
+        print(json.dumps(h_res, ensure_ascii=False, indent=2))
+        return
     
     data = json.loads(args.manifest.read_text(encoding="utf-8"))
     report = scan_and_report_issues(data)
