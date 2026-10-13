@@ -78,6 +78,10 @@ def parser():
     heal = sub.add_parser("auto-heal", help="End-to-end auto-heal: OCR screenshots, recover links, remove redundant images, and rebind layout")
     heal.add_argument("--run", type=Path, required=True)
     heal.add_argument("--keys", nargs="*", default=None)
+    pipe = sub.add_parser("pipeline", help="Full automated end-to-end pipeline: parse -> auto-heal -> render -> publish -> favorite & 2-round reconcile")
+    pipe.add_argument("--run", type=Path, required=True)
+    pipe.add_argument("--manifest", type=Path, required=True)
+    pipe.add_argument("--mode", choices=("full", "publish", "collect", "audit"), default="full")
     for name in ("apply", "audit", "render", "publish-plan", "published", "snapshot", "plan", "begin-write", "end-write", "reconcile", "status", "finish", "index"):
         s = sub.add_parser(name)
         s.add_argument("--run", type=Path, required=True)
@@ -131,6 +135,11 @@ def main(argv=None):
             args.output.parent.mkdir(parents=True, exist_ok=True)
             args.output.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
         output(report)
+        return 0
+    if args.command == "pipeline":
+        import pipeline
+        res = pipeline.run_pipeline(args.run, args.manifest, args.mode)
+        output(res)
         return 0
     if args.command == "init":
         run = args.run.resolve()

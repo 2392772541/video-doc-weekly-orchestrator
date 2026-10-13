@@ -1501,6 +1501,49 @@ class ResolveLinksAndCollectRunnerTests(unittest.TestCase):
             finally:
                 resolve_links.scan_screenshot_for_urls = orig_scan
 
+
+    def test_pipeline_run_end_to_end(self):
+        import pipeline
+        with tempfile.TemporaryDirectory() as td:
+            run_dir = Path(td) / "run"
+            run_dir.mkdir()
+            manifest_file = Path(td) / "seed.json"
+            dummy_video = Path(td) / "dummy.mp4"
+            dummy_video.write_bytes(b"dummy_video_bytes")
+            seed = {
+                "issue": "TEST_PIPELINE",
+                "title": "Pipeline Test Weekly",
+                "sources": [
+                    {"source_id": "src-1", "path": str(dummy_video), "kind": "video", "duration": 100}
+                ],
+                "items": [
+                    {
+                        "key": "item_1",
+                        "title": "Item One",
+                        "section": "Sec 1",
+                        "kind": "video",
+                        "url": "https://www.douyin.com/video/7689404171926108874",
+                        "source_id": "src-1",
+                        "timestamp_seconds": 10
+                    },
+                    {
+                        "key": "item_2",
+                        "title": "Item Two Plain",
+                        "section": "Sec 1",
+                        "kind": "plain",
+                        "url": "",
+                        "source_id": "src-1",
+                        "timestamp_seconds": 20
+                    }
+                ]
+            }
+            manifest_file.write_text(json.dumps(seed, ensure_ascii=False), encoding="utf-8")
+            res = pipeline.run_pipeline(run_dir, manifest_file, mode="full")
+            self.assertTrue(res["ok"])
+            self.assertEqual(res["items_count"], 2)
+            self.assertTrue(res["collections"]["douyin"]["reconcile_ok"])
+            self.assertTrue(Path(res["catalog_sqlite"]).is_file())
+
 if __name__ == "__main__":
 
     unittest.main(verbosity=2)
