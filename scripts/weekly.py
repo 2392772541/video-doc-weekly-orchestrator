@@ -261,44 +261,17 @@ def main(argv=None):
                 scripts[plat]["watched_excluded_count"] = len(plan["missing_ids"]) - len(unwatched_plan_ids)
                 scripts[plat]["unwatched_planned_count"] = len(unwatched_plan_ids)
 
-        # Also generate categorized scripts if multiple categories exist in items
-        cat_douyin = real_collector.build_category_mapping(items, "douyin", watched_ids=watched_vids)
-        if cat_douyin and len(cat_douyin) > 1:
-            dy_cat_js = real_collector.generate_douyin_categorized_browser_script(cat_douyin)
-            f_cat_dy = run_p / "evidence" / "collect_douyin_categorized.js"
-            f_cat_dy.write_text(dy_cat_js, encoding="utf-8")
-            
-            # Write watched filter report
-            if watched_vids:
-                _, dy_watched = real_collector.filter_watched_items([it for it in items if it.get("platform") == "douyin"], watched_vids)
-                filter_report = {
-                    "total_douyin_items": sum(1 for it in items if it.get("platform") == "douyin"),
-                    "watched_excluded_count": len(dy_watched),
-                    "unwatched_planned_count": sum(len(v) for v in cat_douyin.values()),
-                    "categories": {c: len(v) for c, v in cat_douyin.items()}
-                }
-                (run_p / "evidence" / "douyin_watched_filtering.json").write_text(
-                    json.dumps(filter_report, ensure_ascii=False, indent=2), encoding="utf-8"
-                )
-
-            scripts["douyin_categorized"] = {
-                "script_file": str(f_cat_dy),
-                "categories": list(cat_douyin.keys()),
-                "total_items": sum(len(v) for v in cat_douyin.values()),
-                "watched_excluded": len(watched_vids) if watched_vids else 0
+        # Write watched filter report if watched_vids present
+        if watched_vids:
+            _, dy_watched = real_collector.filter_watched_items([it for it in items if it.get("platform") == "douyin"], watched_vids)
+            filter_report = {
+                "total_douyin_items": sum(1 for it in items if it.get("platform") == "douyin"),
+                "watched_excluded_count": len(dy_watched),
+                "unwatched_planned_count": len(unwatched_plan_ids) if 'unwatched_plan_ids' in locals() else 0
             }
-
-        cat_bili = real_collector.build_category_mapping(items, "bilibili")
-        if cat_bili and len(cat_bili) > 1:
-            bili_cat_map = {c: {"items": v, "folder_id": st["targets"]["bilibili"]["folder_id"]} for c, v in cat_bili.items()}
-            bili_cat_js = real_collector.generate_bilibili_categorized_browser_script(bili_cat_map, st["targets"]["bilibili"]["folder_id"])
-            f_cat_bili = run_p / "evidence" / "collect_bilibili_categorized.js"
-            f_cat_bili.write_text(bili_cat_js, encoding="utf-8")
-            scripts["bilibili_categorized"] = {
-                "script_file": str(f_cat_bili),
-                "categories": list(cat_bili.keys()),
-                "total_items": sum(len(v) for v in cat_bili.values())
-            }
+            (run_p / "evidence" / "douyin_watched_filtering.json").write_text(
+                json.dumps(filter_report, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
         output({"ok": True, "plans": scripts})
         return 0
     if args.command == "init":
