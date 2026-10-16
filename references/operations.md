@@ -88,9 +88,19 @@ apply整批失败不写入run；编辑标题或来源使旧核验失效。source
 
 ## 4. 收藏（两个平台串行）
 
-### 自动化串行收藏脚本辅助
+### 自动化真实收藏执行规范（彻底杜绝假完成）
 
-技能内置了自动化收藏执行器 `scripts/collect_runner.py`，支持一键生成差集与安全的浏览器批处理执行脚本：
+技能内置了自动化收藏执行器 `scripts/weekly.py collect-plan` 与 `scripts/real_collector.py`，支持一键生成差集与安全的浏览器批处理执行脚本：
+
+```powershell
+# 针对指定平台自动生成包含登录预检、防风控间隔与自适应定位器的执行脚本
+& $py -B $cli collect-plan --run $run
+```
+
+**【审核员执行红线】**：
+1. **严禁仅生成脚本就汇报成功**：Agent 必须通过 `cua_repl` 在当前已登录标签页中真实执行生成的脚本；
+2. **登录态前置阻断**：若脚本提示 `not_logged_in`，Agent 必须停下请求用户登录，绝不允许未登录静默伪造回执；
+3. **两轮全量回读验收**：执行完毕后必须进行两轮全量快照拉取，只有在对账差集为 0 时，才允许标记完全成功。
 
 ```powershell
 # 针对指定平台自动生成包含5秒等待间隔的执行脚本
@@ -150,3 +160,14 @@ API快照要完整游标链和真实终止；UI快照要实际目标可见、各
 ```
 
 无Cookie、每项节流、风险码立即停止。metadata_accessible仅可访问元信息，永远不自动给identity_verified；还要独立对照原作。旧validator入口保留，但旧manifest没有逐项v2证据会失败，这是预期保护。
+## 6. 终末收尾：飞书蓝色链接转卡片预览
+
+> **时序红线**：必须在两平台所有视频均收藏并对账完毕（`reconcile` missing 为 0）后，才执行本收尾转换。
+
+```powershell
+& $py -B $cli convert-preview --doc '<飞书文档Token/ID>' --delay 0.3
+```
+
+- 原理：将文档顶层 Bookmark Block（`block_type: 21`，蓝色小书签）就地替换为原生可交互的 Iframe Block（`block_type: 26`，B站视频配置 `iframe_type: 1`，抖音配置 `iframe_type: 99`）。
+- 完整性保障：执行前后自动对比大纲标题（headings）、段落（paragraphs）和时间戳截图（images）总数；三者必须完全相等，杜绝丢失正文或对照图片。
+- 一体化流水线集成：若执行 `pipeline` 命令并附加 `--feishu-doc <doc_id>`，系统会在双平台收藏对账成功后自动触发本阶段。

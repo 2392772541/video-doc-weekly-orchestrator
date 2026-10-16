@@ -169,10 +169,20 @@ def check_evidence(run, refs):
         require(actual["sha256"] == ref["sha256"], "evidence_changed: " + ref["path"])
 
 
+def clean_heading_text(val):
+    s = str(val or "").strip()
+    return re.sub(r"^#+\s*", "", s).strip()
+
+
 def default_layout(items):
     layout, group = [], None
     for it in items:
-        pair = (it.get("section", "未分组"), it.get("subsection", ""))
+        sec = clean_heading_text(it.get("section") or "未分组")
+        raw_sub = it.get("subsection") or it.get("sub_section") or it.get("subcategory") or it.get("sub_category") or ""
+        subsec = clean_heading_text(raw_sub)
+        if subsec == sec:
+            subsec = ""
+        pair = (sec, subsec)
         if pair != group:
             if group is None or pair[0] != group[0]:
                 layout.append({"type": "heading", "level": 2, "text": pair[0]})
@@ -197,11 +207,26 @@ def initialize(seed, mode="full"):
         except GateError:
             link = {"url": "", "platform": "douyin" if "douyin.com" in raw else "bilibili" if "bilibili.com/video" in raw else "web" if raw else "plain", "id": ""}
         kind = src.get("kind") or ("video" if link["platform"] in VIDEO_PLATFORMS else "link" if raw else "plain")
-        it = {"key": src.get("key", f"i{n:04d}"), "section": src.get("section", "未分组"), "subsection": src.get("subsection", ""), "number": src.get("number", n), "title": src.get("title", ""), "body": src.get("body", ""), "kind": kind, "original_url": raw, "canonical_url": "", "platform": link["platform"], "id": "", "author": "", "source": None, "verification": None, "candidates": [], "repeat_of": src.get("repeat_of"), "exception": None}
+        sec = clean_heading_text(src.get("section") or "未分组")
+        raw_sub = src.get("subsection") or src.get("sub_section") or src.get("subcategory") or src.get("sub_category") or ""
+        subsec = clean_heading_text(raw_sub)
+        if subsec == sec:
+            subsec = ""
+        it = {"key": src.get("key", f"i{n:04d}"), "section": sec, "subsection": subsec, "number": src.get("number", n), "title": src.get("title", ""), "body": src.get("body", ""), "kind": kind, "original_url": raw, "canonical_url": "", "platform": link["platform"], "id": "", "author": "", "source": None, "verification": None, "candidates": [], "repeat_of": src.get("repeat_of"), "exception": None}
         items.append(it)
     require(len({x["key"] for x in items}) == len(items), "duplicate_item_key")
     require(all(x["title"] for x in items), "empty_item_title")
-    return {"schema_version": SCHEMA, "run_id": str(uuid.uuid4()), "created_at": now(), "updated_at": now(), "mode": mode, "scope": seed.get("scope", "full_report"), "issue": {"title": seed.get("title", "未命名周报"), "week": seed.get("source_week", "")}, "permissions": {"publish": False, "collect": [], "user_request": ""}, "sources": {}, "inventory": {"expected_numbered": seed.get("numbered_item_count", sum(i["kind"] != "quick_news" for i in items)), "expected_quick_news": seed.get("quick_news_count", sum(i["kind"] == "quick_news" for i in items)), "review": None}, "layout": seed.get("layout", default_layout(items)), "items": items, "target_names": {"feishu": seed.get("folder_name", "水球泡周报"), "douyin": "水球泡视频周报", "bilibili": "水球泡周报视频"}, "targets": {}, "publication": {}, "rendered": {}, "snapshots": {"douyin": [], "bilibili": []}, "plans": {}, "attempts": [], "status": "draft", "migration_note": "Existing URLs and old success flags are NOT verification. Review complete layout, introductions and quick news against source."}
+    def_layout = default_layout(items)
+    if "layout" in seed and seed["layout"]:
+        items_have_subsections = any(i.get("subsection") for i in items)
+        layout_has_l3 = any(b.get("type") == "heading" and b.get("level") == 3 for b in seed["layout"])
+        if items_have_subsections and not layout_has_l3:
+            layout = copy.deepcopy(def_layout)
+        else:
+            layout = seed["layout"]
+    else:
+        layout = def_layout
+    return {"schema_version": SCHEMA, "run_id": str(uuid.uuid4()), "created_at": now(), "updated_at": now(), "mode": mode, "scope": seed.get("scope", "full_report"), "issue": {"title": seed.get("title", "未命名周报"), "week": seed.get("source_week", "")}, "permissions": {"publish": False, "collect": [], "user_request": ""}, "sources": {}, "inventory": {"expected_numbered": seed.get("numbered_item_count", sum(i["kind"] != "quick_news" for i in items)), "expected_quick_news": seed.get("quick_news_count", sum(i["kind"] == "quick_news" for i in items)), "review": None}, "layout": layout, "items": items, "target_names": {"feishu": seed.get("folder_name", "水球泡周报"), "douyin": "水球泡视频周报", "bilibili": "水球泡周报视频"}, "targets": {}, "publication": {}, "rendered": {}, "snapshots": {"douyin": [], "bilibili": []}, "plans": {}, "attempts": [], "status": "draft", "migration_note": "Existing URLs and old success flags are NOT verification. Review complete layout, introductions and quick news against source."}
 
 
 def get_item(state, key):
@@ -855,7 +880,7 @@ def index_rows(state, run, at=None):
                 collection = "pending"
         cand_url = it.get("candidate_url") or next((c.get("url") for c in it.get("candidates", []) if c.get("match_type") == "text_search_candidate"), "")
         screenshot = it.get("screenshot") or next((c.get("screenshot") for c in it.get("candidates", []) if c.get("screenshot")), "")
-        rows.append({"record_key": state["run_id"] + ":" + it["key"], "run_id": state["run_id"], "item_key": it["key"], "issue": state["issue"]["title"], "week": state["issue"]["week"], "section": it["section"], "title": it["title"], "author": it["author"], "platform": it["platform"], "id": it["id"] or next(iter(re.findall(r"BV[A-Za-z0-9]{10}|(?<![0-9])[0-9]{19}(?![0-9])", it["original_url"])), ""), "original_url": it["original_url"], "url": it["canonical_url"], "link_status": link_status, "collection": collection, "verified_at": verified_at, "candidate_url": cand_url, "screenshot": screenshot, "source": it["source"], "candidates": it["candidates"], "document_url": state.get("publication", {}).get("document_url", ""), "folder_name": state["targets"].get(it["platform"], {}).get("folder_name", ""), "folder_url": state["targets"].get(it["platform"], {}).get("folder_url", ""), "run_path": str(Path(run).resolve())})
+        rows.append({"record_key": state["run_id"] + ":" + it["key"], "run_id": state["run_id"], "item_key": it["key"], "issue": state["issue"]["title"], "week": state["issue"]["week"], "section": it["section"], "subsection": it.get("subsection", ""), "title": it["title"], "author": it["author"], "platform": it["platform"], "id": it["id"] or next(iter(re.findall(r"BV[A-Za-z0-9]{10}|(?<![0-9])[0-9]{19}(?![0-9])", it["original_url"])), ""), "original_url": it["original_url"], "url": it["canonical_url"], "link_status": link_status, "collection": collection, "verified_at": verified_at, "candidate_url": cand_url, "screenshot": screenshot, "source": it["source"], "candidates": it["candidates"], "document_url": state.get("publication", {}).get("document_url", ""), "folder_name": state["targets"].get(it["platform"], {}).get("folder_name", ""), "folder_url": state["targets"].get(it["platform"], {}).get("folder_url", ""), "run_path": str(Path(run).resolve())})
     return rows
 
 
@@ -875,7 +900,8 @@ def render_index_html(rows, destination):
         if r.get("screenshot"):
             links += ' <a rel="noreferrer" target="_blank" href="' + html.escape(r["screenshot"], quote=True) + '">查看录屏截图</a>'
         links += " " + safe_link(r["document_url"], "本期周报") + " " + safe_link(r["folder_url"], "收藏夹")
-        fields = [r["issue"], r["section"], r["title"], r["author"], r["platform"], r["id"], label, r["verified_at"], r["folder_name"]]
+        sec_label = r["section"] + ((" - " + r["subsection"]) if r.get("subsection") else "")
+        fields = [r["issue"], sec_label, r["title"], r["author"], r["platform"], r["id"], label, r["verified_at"], r["folder_name"]]
         body.append('<tr><td>' + '</td><td>'.join(html.escape(str(x)) for x in fields) + '</td><td>' + links + '</td></tr>')
     html_doc = '<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>周报作品索引</title><style>body{font:16px/1.6 system-ui;margin:32px;color:#142238;background:#f5f7fb}h1{margin-bottom:6px}input{padding:12px;width:min(90%,680px);margin:16px 0;border:1px solid #bcc8d8;border-radius:8px}table{border-collapse:collapse;background:white}th,td{text-align:left;padding:12px;border-bottom:1px solid #e0e5ec;max-width:380px;overflow-wrap:anywhere}th{background:#e8eff9}a{color:#165bb2;white-space:nowrap}.scroll{overflow:auto}</style><h1>周报作品索引</h1><p>可按期号、标题、作者、视频 ID 搜索。跨期总索引显示最近最多5000项，更多可用命令查询。核验是所标时间的证据，不保证平台永久保留。相似候选没有冒充原作品。</p><input id="q" placeholder="输入关键词，例如标题、作者、BV号"><div class="scroll"><table><thead><tr><th>期号</th><th>栏目</th><th>标题</th><th>作者</th><th>平台</th><th>ID</th><th>状态</th><th>核验时间</th><th>收藏夹</th><th>入口</th></tr></thead><tbody>' + ''.join(body) + '</tbody></table></div><script>document.getElementById("q").addEventListener("input",function(){const q=this.value.toLowerCase().trim().split(/\\s+/);document.querySelectorAll("tbody tr").forEach(r=>{r.hidden=!q.every(s=>r.textContent.toLowerCase().includes(s))})})</script></html>'
     atomic_text(destination, html_doc)
@@ -891,7 +917,7 @@ def export_index(state, run, catalog=None):
         with closing(sqlite3.connect(str(catalog), timeout=10)) as db, db:
             db.execute("CREATE TABLE IF NOT EXISTS entries (record_key TEXT PRIMARY KEY, run_id TEXT NOT NULL, search_text TEXT NOT NULL, payload TEXT NOT NULL)")
             db.execute("DELETE FROM entries WHERE run_id=?", (state["run_id"],))
-            db.executemany("INSERT INTO entries VALUES (?,?,?,?)", [(r["record_key"], state["run_id"], ' '.join(str(r[k]) for k in ("issue", "week", "section", "title", "author", "platform", "id", "original_url", "url")).lower(), compact(r)) for r in rows])
+            db.executemany("INSERT INTO entries VALUES (?,?,?,?)", [(r["record_key"], state["run_id"], ' '.join(str(r.get(k, "")) for k in ("issue", "week", "section", "subsection", "title", "author", "platform", "id", "original_url", "url")).lower(), compact(r)) for r in rows])
             all_rows = [json.loads(row[0]) for row in db.execute("SELECT payload FROM entries ORDER BY rowid DESC LIMIT 5000")]
         render_index_html(all_rows, catalog.parent / "index.html")
     return {"items": len(rows), "index": str(Path(run) / "index.html"), "json": str(Path(run) / "library.json"), "catalog": str(catalog) if catalog else None, "catalog_index": str(catalog.parent / "index.html") if catalog else None}

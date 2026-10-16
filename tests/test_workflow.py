@@ -250,6 +250,15 @@ class WorkflowTests(unittest.TestCase):
 
         self.assertEqual(w.search_catalog(catalog, "%' OR 1=1 --"), [])
 
+    def test_record_real_receipts_to_state_in_workflow(self):
+        import real_collector
+        self.published()
+        p = self.plan("douyin")
+        receipts = [{"id": DY, "outcome": "ui_confirmed", "code": 0}]
+        res = real_collector.record_real_receipts_to_state(self.run, self.s, "douyin", receipts, p["plan_id"], self.t(5))
+        self.assertEqual(res["applied_count"], 1)
+        self.assertEqual(self.s["attempts"][-1]["outcome"], "ui_confirmed")
+        self.assertEqual(self.s["attempts"][-1]["id"], DY)
 
 
     def test_old_success_never_trusted_and_missing_quick_news(self):
@@ -1543,6 +1552,370 @@ class ResolveLinksAndCollectRunnerTests(unittest.TestCase):
             self.assertEqual(res["items_count"], 2)
             self.assertTrue(res["collections"]["douyin"]["reconcile_ok"])
             self.assertTrue(Path(res["catalog_sqlite"]).is_file())
+
+
+
+class MultiSearchAndCollectorTests(unittest.TestCase):
+    def test_multi_search_clean_and_token_extraction(self):
+        import multi_search_resolver as msr
+        self.assertEqual(msr.clean_html_tags('<em class="keyword">周报</em>视频'), "周报视频")
+        self.assertEqual(msr.clean_html_tags("无标签文本"), "无标签文本")
+        self.assertEqual(msr.extract_title_core_tokens("25. 【且曼精选】艺术的共鸣 part4"), "艺术的共鸣part4")
+        self.assertEqual(msr.extract_title_core_tokens("67. 时代眼泪！Mac按钮演变时间线"), "时代眼泪mac按钮演变时间线")
+
+    def test_evaluate_candidate_match_exact_and_fuzzy(self):
+        import multi_search_resolver as msr
+        # Exact match
+        ev1 = msr.evaluate_candidate_match("如何用Claude以10倍速度学习任何东西", "UP主", "如何用Claude以10倍速度学习任何东西", "UP主")
+        self.assertTrue(ev1["matched"])
+        self.assertEqual(ev1["score"], 1.0)
+
+        # High overlap with same author
+        ev2 = msr.evaluate_candidate_match("艺术的共鸣 part4", "混剪晓佳", "【混剪】艺术的共鸣 part4 全记录", "混剪晓佳")
+        self.assertTrue(ev2["matched"])
+        self.assertGreaterEqual(ev2["score"], 0.8)
+
+        # Dissimilar candidate rejected
+        ev3 = msr.evaluate_candidate_match("如何用Claude学习", "UP主", "今日股市大盘行情分析", "老股民")
+        self.assertFalse(ev3["matched"])
+
+    def test_generate_chatgpt_search_sheet(self):
+        import multi_search_resolver as msr
+        unresolved = [
+            {
+                "key": "item_13",
+                "title": "不会用Github？先让AI带你上手",
+                "author": "且曼",
+                "source": {"timestamp_seconds": 480},
+                "body": "打开GitHub，搜索你想找的内容"
+            }
+        ]
+        sheet = msr.generate_chatgpt_search_sheet(unresolved)
+        self.assertEqual(sheet["total"], 1)
+        self.assertIn("item_13", sheet["prompt"])
+        self.assertIn("不会用Github", sheet["prompt"])
+        self.assertIn("480s", sheet["prompt"])
+        self.assertIn("JSON 数组", sheet["prompt"])
+
+    def test_apply_search_resolutions_upgrades_items_and_cleans_images(self):
+        import multi_search_resolver as msr
+        import weekly_core as w
+        with tempfile.TemporaryDirectory() as td:
+            run_dir = Path(td)
+            state = {
+                "run_id": "test_run",
+                "items": [
+                    {
+                        "key": "item_99",
+                        "title": "艺术的共鸣 part4",
+                        "author": "混剪晓佳",
+                        "kind": "plain",
+                        "exception": "no_link",
+                        "screenshot": "evidence/screenshots/item_99.jpg"
+                    }
+                ],
+                "layout": [
+                    {"type": "item", "key": "item_99"},
+                    {"type": "image", "owner_key": "item_99", "src": "token_img_99"}
+                ],
+                "inventory": {}
+            }
+            resolutions = [
+                {
+                    "key": "item_99",
+                    "title": "艺术的共鸣 part4",
+                    "author": "混剪晓佳",
+                    "url": "https://www.bilibili.com/video/BV16sYx6oEPJ"
+                }
+            ]
+            res = msr.apply_search_resolutions_to_state(run_dir, state, resolutions)
+            self.assertEqual(res["applied_count"], 1)
+            it = state["items"][0]
+            self.assertEqual(it["canonical_url"], "https://www.bilibili.com/video/BV16sYx6oEPJ")
+            self.assertEqual(it["kind"], "video")
+            self.assertNotIn("exception", it)
+            self.assertNotIn("screenshot", it)
+            # Mutual exclusion: image block must be removed
+            has_image = any(b.get("type") == "image" and b.get("owner_key") == "item_99" for b in state["layout"])
+            self.assertFalse(has_image)
+
+    def test_generate_browser_scripts_templates(self):
+        import real_collector as rc
+        b_js = rc.generate_bilibili_browser_script("水球泡周报视频", "fid_123", ["BV1xx", "BV2yy"])
+        self.assertIn("水球泡周报视频", b_js)
+        self.assertIn("BV1xx", b_js)
+        self.assertIn("BV2yy", b_js)
+
+        d_js = rc.generate_douyin_browser_script("水球泡视频周报", "7423955100025112233", ["7695302751908478458"])
+        self.assertIn("水球泡视频周报", d_js)
+        self.assertIn("7423955100025112233", d_js)
+        self.assertIn("7695302751908478458", d_js)
+
+
+
+    def test_feishu_preview_converter_audit(self):
+        import feishu_preview_converter as fpc
+        sample_xml = """<root>
+            <h1 id="h1_1">Title</h1>
+            <p id="p_1">Intro text</p>
+            <bookmark id="bm_1" name="Douyin Video" href="https://www.douyin.com/video/7689404171926108874"></bookmark>
+            <bookmark id="bm_2" name="Bilibili Video" href="https://www.bilibili.com/video/BV15SYu6iE8T"></bookmark>
+            <readonly-block id="if_1" href="https://www.douyin.com/video/7689404171926108874" type="iframe"></readonly-block>
+            <img id="img_1" />
+        </root>"""
+        audit = fpc.audit_doc_content(sample_xml)
+        self.assertEqual(audit["bookmark_count"], 2)
+        self.assertEqual(audit["iframe_count"], 1)
+        self.assertEqual(audit["heading_count"], 1)
+        self.assertEqual(audit["paragraph_count"], 1)
+        self.assertEqual(audit["image_count"], 1)
+        self.assertEqual(len(audit["bookmarks"]), 2)
+        self.assertEqual(audit["bookmarks"][0]["id"], "bm_1")
+
+    def test_pipeline_run_with_feishu_preview_conversion(self):
+        import pipeline
+        import feishu_preview_converter
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as td:
+            run_dir = Path(td) / "run"
+            run_dir.mkdir()
+            manifest_file = Path(td) / "seed.json"
+            dummy_video = Path(td) / "dummy.mp4"
+            dummy_video.write_bytes(b"dummy")
+            seed = {
+                "issue": "TEST_PREVIEW_PIPELINE",
+                "title": "Pipeline Preview Test",
+                "feishu_doc_id": "doc_test_abc123",
+                "sources": [
+                    {"source_id": "src-1", "path": str(dummy_video), "kind": "video", "duration": 50}
+                ],
+                "items": [
+                    {
+                        "key": "it_1",
+                        "title": "Item One",
+                        "section": "Sec 1",
+                        "kind": "video",
+                        "url": "https://www.douyin.com/video/7689404171926108874",
+                        "source_id": "src-1",
+                        "timestamp_seconds": 5
+                    }
+                ]
+            }
+            manifest_file.write_text(json.dumps(seed, ensure_ascii=False), encoding="utf-8")
+
+            fake_conv_res = {
+                "ok": True,
+                "doc_id": "doc_test_abc123",
+                "converted_count": 1,
+                "failed_count": 0,
+                "integrity_check": {"all_preserved": True}
+            }
+            with patch.object(feishu_preview_converter, "convert_all_bookmarks_to_previews", return_value=fake_conv_res) as mock_conv:
+                res = pipeline.run_pipeline(run_dir, manifest_file, mode="full")
+                self.assertTrue(res["ok"])
+                self.assertIsNotNone(res.get("feishu_preview_conversion"))
+                self.assertTrue(res["feishu_preview_conversion"]["ok"])
+                self.assertEqual(res["feishu_preview_conversion"]["converted_count"], 1)
+                mock_conv.assert_called_once_with("doc_test_abc123")
+                
+                # Verify evidence file exists
+                ev_file = run_dir / "evidence" / "feishu_preview_conversion.json"
+                self.assertTrue(ev_file.is_file())
+
+    def test_subsection_hierarchy_restoration(self):
+        seed = {
+            "title": "Subheading Test Weekly",
+            "source_week": "synthetic",
+            "items": [
+                {
+                    "key": "m1",
+                    "title": "电影作品A",
+                    "section": "每周电影",
+                    "sub_section": "每周电影",  # same as section -> redundant L3 must be avoided
+                    "number": 1,
+                    "url": DURL
+                },
+                {
+                    "key": "l1",
+                    "title": "热点条目1",
+                    "section": "游戏人生，说地谈天",
+                    "sub_section": "热点/认知",  # sub_section alias with slash
+                    "number": 2,
+                    "url": BURL
+                },
+                {
+                    "key": "l2",
+                    "title": "情感条目2",
+                    "section": "游戏人生，说地谈天",
+                    "subsection": "#关系/情感",  # subsection with leading #
+                    "number": 3,
+                    "kind": "plain",
+                    "body": "情感随笔"
+                },
+                {
+                    "key": "v1",
+                    "title": "视频制作条目",
+                    "section": "自媒体与搞钱",
+                    "subcategory": "视频制作",  # subcategory alias
+                    "number": 4,
+                    "url": DURL
+                }
+            ]
+        }
+        state = w.initialize(seed)
+
+        # 1. Verify items parsed subsections properly
+        self.assertEqual(state["items"][0]["subsection"], "")  # cleared because same as section
+        self.assertEqual(state["items"][1]["subsection"], "热点/认知")
+        self.assertEqual(state["items"][2]["subsection"], "关系/情感")  # leading # stripped
+        self.assertEqual(state["items"][3]["subsection"], "视频制作")
+
+        # 2. Verify layout contains L2 sections and L3 subsections
+        headings = [b for b in state["layout"] if b["type"] == "heading"]
+        heading_pairs = [(h["level"], h["text"]) for h in headings]
+        expected_headings = [
+            (2, "每周电影"),
+            (2, "游戏人生，说地谈天"),
+            (3, "热点/认知"),
+            (3, "关系/情感"),
+            (2, "自媒体与搞钱"),
+            (3, "视频制作")
+        ]
+        self.assertEqual(heading_pairs, expected_headings)
+
+        # 3. Verify report rendering structure
+        md, xml = w.build_report(state)
+
+        # In Markdown
+        self.assertIn("## 每周电影", md)
+        self.assertIn("### 1. 电影作品A", md)  # L3 item under L2 section (no subsection)
+        self.assertIn("## 游戏人生，说地谈天", md)
+        self.assertIn("### 热点/认知", md)
+        self.assertIn("#### 2. 热点条目1", md)  # L4 item under L3 subsection
+        self.assertIn("### 关系/情感", md)
+        self.assertIn("#### <b><span style=\"color:#d83931\">3. 情感条目2</span></b>", md)
+        self.assertIn("## 自媒体与搞钱", md)
+        self.assertIn("### 视频制作", md)
+        self.assertIn("#### 4. 视频制作条目", md)
+
+        # In Feishu XML
+        self.assertIn("<h2>每周电影</h2>", xml)
+        self.assertIn("<h3>1. 电影作品A</h3>", xml)
+        self.assertIn("<h2>游戏人生，说地谈天</h2>", xml)
+        self.assertIn("<h3>热点/认知</h3>", xml)
+        self.assertIn("<h4>2. 热点条目1</h4>", xml)
+        self.assertIn("<h3>关系/情感</h3>", xml)
+        self.assertIn("<h4><b><span text-color=\"red\">3. 情感条目2</span></b></h4>", xml)
+        self.assertIn("<h2>自媒体与搞钱</h2>", xml)
+        self.assertIn("<h3>视频制作</h3>", xml)
+        self.assertIn("<h4>4. 视频制作条目</h4>", xml)
+
+    def test_legacy_flattened_layout_auto_upgrades_subsections(self):
+        seed = {
+            "title": "Legacy Layout Upgrade Test",
+            "source_week": "synthetic",
+            "layout": [
+                {"type": "heading", "level": 2, "text": "游戏人生，说地谈天"},
+                {"type": "item", "key": "i1"},
+                {"type": "item", "key": "i2"}
+            ],
+            "items": [
+                {
+                    "key": "i1",
+                    "title": "条目1",
+                    "section": "游戏人生，说地谈天",
+                    "sub_section": "热点/认知",
+                    "number": 1,
+                    "url": DURL
+                },
+                {
+                    "key": "i2",
+                    "title": "条目2",
+                    "section": "游戏人生，说地谈天",
+                    "sub_section": "关系/情感",
+                    "number": 2,
+                    "url": BURL
+                }
+            ]
+        }
+        state = w.initialize(seed)
+        headings = [(b["level"], b["text"]) for b in state["layout"] if b["type"] == "heading"]
+        self.assertEqual(headings, [
+            (2, "游戏人生，说地谈天"),
+            (3, "热点/认知"),
+            (3, "关系/情感")
+        ])
+
+    def test_sqlite_catalog_and_library_searches_by_subsection(self):
+        seed = {
+            "title": "Subsection Catalog Search Test",
+            "source_week": "synthetic",
+            "items": [
+                {
+                    "key": "cat_1",
+                    "title": "如何思考",
+                    "section": "游戏人生，说地谈天",
+                    "subsection": "热点/认知",
+                    "number": 1,
+                    "url": DURL
+                }
+            ]
+        }
+        state = w.initialize(seed)
+        with tempfile.TemporaryDirectory() as td:
+            run_d = Path(td) / "run"
+            run_d.mkdir()
+            cat_db = Path(td) / "catalog.sqlite"
+            res = w.export_index(state, run_d, cat_db)
+            self.assertTrue(cat_db.is_file())
+            
+            # Search by subsection keyword
+            found = w.search_catalog(cat_db, "热点/认知")
+            self.assertEqual(len(found), 1)
+            self.assertEqual(found[0]["subsection"], "热点/认知")
+            self.assertEqual(found[0]["title"], "如何思考")
+
+    def test_extract_feishu_embedded_iframes_and_players(self):
+        import extract_feishu
+        xml = (
+            '<title>内刊测试</title>'
+            '<h2>每周电影</h2>'
+            '<h3>狂拍100部电影</h3>'
+            '<readonly-block id="b1" href="https://player.bilibili.com/player.html?bvid=1dKeB6HEvJ" type="iframe"></readonly-block>'
+            '<h2>本周最TOP</h2>'
+            '<h3>1. 妙瓦底生死36小时</h3>'
+            '<readonly-block id="b2" href="https://open.douyin.com/player/video?vid=7695302751908478458&amp;mode=pc" type="iframe"></readonly-block>'
+            '<h2>游戏人生，说地谈天</h2>'
+            '<h3>热点/认知</h3>'
+            '<h4>2. 知行合一</h4>'
+            '<p><a href="https://www.douyin.com/video/7651922649496593073">https://www.douyin.com/video/7651922649496593073</a></p>'
+        )
+        payload = {"ok": True, "identity": "user", "data": {"document": {"document_id": "doc_test", "revision_id": 5, "content": xml}}}
+        res = extract_feishu.extract(payload)
+        self.assertEqual(res["numbered_item_count"], 3)
+        self.assertEqual(res["items"][0]["platform"], "bilibili")
+        self.assertEqual(res["items"][0]["url"], "https://www.bilibili.com/video/BV1dKeB6HEvJ")
+        self.assertEqual(res["items"][0]["title"], "狂拍100部电影")
+        self.assertEqual(res["items"][1]["platform"], "douyin")
+        self.assertEqual(res["items"][1]["url"], "https://www.douyin.com/video/7695302751908478458")
+        self.assertEqual(res["items"][2]["subsection"], "热点/认知")
+        self.assertEqual(res["items"][2]["title"], "知行合一")
+
+    def test_weekly_cli_sync_sidebar_and_extract_feishu(self):
+        import weekly
+        p = weekly.parser()
+        # Test sync-sidebar args
+        args_sync = p.parse_args(["sync-sidebar", "--doc", "ImVld2fwgoOB5MxzzSvc5q9Qnqh"])
+        self.assertEqual(args_sync.command, "sync-sidebar")
+        self.assertEqual(args_sync.doc, "ImVld2fwgoOB5MxzzSvc5q9Qnqh")
+        # Test extract-feishu args
+        args_ext = p.parse_args(["extract-feishu", "--doc", "doc_xyz", "--out", "manifest.json"])
+        self.assertEqual(args_ext.command, "extract-feishu")
+        self.assertEqual(args_ext.doc, "doc_xyz")
+        self.assertEqual(args_ext.out, Path("manifest.json"))
+
+
 
 if __name__ == "__main__":
 

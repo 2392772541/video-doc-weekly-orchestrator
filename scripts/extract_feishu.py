@@ -10,6 +10,29 @@ from urllib.parse import urlsplit
 import weekly_core as w
 
 NUMBERED = re.compile(r"^\s*(\d+)[.、．)]\s*(.*)", re.S)
+KNOWN_SUBSECTIONS = {
+    "热点/认知", "关系/情感", "生命/告别", "轻松/日常",
+    "视频制作", "人设", "搞钱",
+    "AI周报", "AI优秀文章", "AI改变", "AI热点", "AI基础"
+}
+
+
+def resolve_embedded_player_url(url: str) -> str:
+    """Converts Feishu embedded player URLs (readonly-block/iframe) back to canonical video URLs."""
+    if not url:
+        return ""
+    if "player.bilibili.com" in url:
+        m = re.search(r"bvid=([A-Za-z0-9]+)", url)
+        if m:
+            bvid = m.group(1)
+            if not bvid.startswith("BV"):
+                bvid = "BV" + bvid
+            return f"https://www.bilibili.com/video/{bvid}"
+    elif "open.douyin.com" in url:
+        m = re.search(r"vid=(\d+)", url)
+        if m:
+            return f"https://www.douyin.com/video/{m.group(1)}"
+    return url
 
 
 def extract(payload, platform=None):
@@ -21,7 +44,7 @@ def extract(payload, platform=None):
     items, section, subsection, owner = [], "未分组", "", None
     for e in root.iter():
         heading = re.fullmatch(r"h([1-6])", e.tag)
-        if not heading and e.tag not in {"p", "li"}:
+        if not heading and e.tag not in {"p", "li", "readonly-block", "iframe"}:
             continue
         if e.tag == "li" and any(c.tag in {"p", "li"} for c in e.iter() if c is not e):
             continue  # Visit nested blocks, not the aggregate parent's duplicate text.
@@ -30,20 +53,30 @@ def extract(payload, platform=None):
         if numbered:
             owner = {"number": int(numbered[1]), "title": numbered[2], "block_id": e.get("block-id", e.get("id", ""))}
         elif heading:
-            if int(heading[1]) <= 2:
+            lvl = int(heading[1])
+            if lvl <= 2:
                 section, subsection = text, ""
-            else:
+                owner = None
+            elif lvl == 3:
                 subsection = text
-            owner = None
+                owner = {"number": None, "title": text, "block_id": e.get("block-id", e.get("id", ""))}
+            else:
+                owner = {"number": None, "title": text, "block_id": e.get("block-id", e.get("id", ""))}
         urls = [a.get("href", "") for a in e.iter("a")]
+        if e.get("href"):
+            urls.append(e.get("href"))
         urls += re.findall(r'https?://[^\s<>"，）]+', text)
-        urls = list(dict.fromkeys(u.rstrip(".,;，。；）】") for u in urls))
+        resolved_urls = []
+        for u in urls:
+            u_clean = u.rstrip(".,;，。；）】")
+            resolved_urls.append(resolve_embedded_player_url(u_clean))
+        urls = list(dict.fromkeys(resolved_urls))
         for url in urls:
             u = urlsplit(url)
             kind = None
-            if u.hostname in {"douyin.com", "www.douyin.com", "m.douyin.com", "v.douyin.com"} and (re.match(r"/(video|note)/", u.path) or "modal_id=" in u.query or u.hostname == "v.douyin.com"):
+            if u.hostname in {"douyin.com", "www.douyin.com", "m.douyin.com", "v.douyin.com", "open.douyin.com"} and (re.match(r"/(video|note|player)/", u.path) or "modal_id=" in u.query or "vid=" in u.query or u.hostname == "v.douyin.com"):
                 kind = "douyin"
-            elif u.hostname in {"bilibili.com", "www.bilibili.com", "m.bilibili.com", "b23.tv"} and (u.path.startswith("/video/") or u.hostname == "b23.tv"):
+            elif u.hostname in {"bilibili.com", "www.bilibili.com", "m.bilibili.com", "b23.tv", "player.bilibili.com"} and (u.path.startswith("/video/") or u.path.startswith("/player") or u.hostname == "b23.tv" or "bvid=" in u.query):
                 kind = "bilibili"
             if not kind or platform and platform != kind:
                 continue
@@ -51,7 +84,19 @@ def extract(payload, platform=None):
             label = owner["title"] if owner else "待定位标题 " + str(n)
             # An inline URL is not part of a numbered title.
             label = label.replace(url, "").strip() if numbered else label
-            items.append({"key": f"i{n:04d}", "section": section, "subsection": subsection, "number": owner["number"] if owner else n, "title": label or "待定位标题 " + str(n), "kind": "video", "url": url, "source_block_id": (owner or {}).get("block_id", ""), "extraction_note": "Proposed owning heading only; inspect same-item source and original before verification."})
+            sub = "" if subsection == label else subsection
+            items.append({
+                "key": f"i{n:04d}",
+                "section": section,
+                "subsection": sub,
+                "number": owner["number"] if owner and owner["number"] is not None else n,
+                "title": label or "待定位标题 " + str(n),
+                "kind": "video",
+                "platform": kind,
+                "url": url,
+                "source_block_id": (owner or {}).get("block_id", ""),
+                "extraction_note": "Proposed owning heading only; inspect same-item source and original before verification."
+            })
     w.require(items, "no_work_urls_found_not_assumed_empty_success")
     return {"title": title, "source_week": "", "numbered_item_count": len(items), "quick_news_count": 0, "scope": "collection_inventory_only_not_full_report", "source_document": {"document_id": doc["document_id"], "revision_id": doc["revision_id"]}, "url_occurrences": len(items), "unique_raw_urls": len({i["url"] for i in items}), "items": items}
 

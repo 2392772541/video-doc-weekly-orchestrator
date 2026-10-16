@@ -82,6 +82,24 @@ def parser():
     pipe.add_argument("--run", type=Path, required=True)
     pipe.add_argument("--manifest", type=Path, required=True)
     pipe.add_argument("--mode", choices=("full", "publish", "collect", "audit"), default="full")
+    pipe.add_argument("--feishu-doc", type=str, default=None, help="Target Feishu doc ID to convert blue links to previews at pipeline end")
+    conv_p = sub.add_parser("convert-preview", help="Convert Feishu doc blue bookmark links to interactive iframe preview cards")
+    conv_p.add_argument("--doc", type=str, required=True, help="Feishu Document ID/Token")
+    conv_p.add_argument("--delay", type=float, default=0.3, help="Delay between block updates in seconds")
+    cg_sheet = sub.add_parser("chatgpt-sheet", help="Generate prompt sheet for ChatGPT deep video search")
+    cg_sheet.add_argument("--run", type=Path, required=True)
+    s_miss = sub.add_parser("search-missing", help="Multi-channel search (Bilibili/ChatGPT/Web) for missing video links")
+    s_miss.add_argument("--run", type=Path, required=True)
+    s_miss.add_argument("--chatgpt-results", type=Path, help="Path to json file containing ChatGPT search results to ingest")
+    c_plan = sub.add_parser("collect-plan", help="Generate production browser scripts for two-platform collection")
+    c_plan.add_argument("--run", type=Path, required=True)
+    sync_sb = sub.add_parser("sync-sidebar", help="Synchronize and rebuild Feishu doc sidebar outline with H3 subsections")
+    sync_sb.add_argument("--doc", type=str, required=True, help="Feishu Document ID/Token")
+    sync_sb.add_argument("--rules", type=Path, help="Optional JSON file defining custom [(sub_title, anchor_keyword), ...]")
+    ext_f = sub.add_parser("extract-feishu", help="Extract video occurrences from an existing Feishu document into a seed manifest")
+    ext_f.add_argument("--doc", type=str, required=True, help="Feishu Document ID/Token")
+    ext_f.add_argument("--out", type=Path, required=True, help="Output manifest JSON path")
+    ext_f.add_argument("--platform", choices=sorted(w.VIDEO_PLATFORMS), help="Filter by platform")
     for name in ("apply", "audit", "render", "publish-plan", "published", "snapshot", "plan", "begin-write", "end-write", "reconcile", "status", "finish", "index"):
         s = sub.add_parser(name)
         s.add_argument("--run", type=Path, required=True)
@@ -138,8 +156,83 @@ def main(argv=None):
         return 0
     if args.command == "pipeline":
         import pipeline
-        res = pipeline.run_pipeline(args.run, args.manifest, args.mode)
+        res = pipeline.run_pipeline(args.run, args.manifest, args.mode, feishu_doc_id=args.feishu_doc)
         output(res)
+        return 0
+    if args.command == "convert-preview":
+        import feishu_preview_converter
+        res = feishu_preview_converter.convert_all_bookmarks_to_previews(args.doc, delay=args.delay)
+        output(res)
+        return 0 if res.get("ok") else 2
+    if args.command == "sync-sidebar":
+        import sync_feishu_sidebar
+        rules = None
+        if args.rules and args.rules.is_file():
+            rules = json.loads(args.rules.read_text(encoding="utf-8"))
+        res = sync_feishu_sidebar.sync_document_sidebar(args.doc, subsections_config=rules)
+        output(res)
+        return 0 if res.get("ok") else 2
+    if args.command == "extract-feishu":
+        import subprocess, extract_feishu
+        cmd = f"lark-cli docs +fetch --doc {args.doc} --detail with-ids"
+        raw_out = subprocess.check_output(cmd, shell=True, text=True, encoding="utf-8")
+        payload = json.loads(raw_out)
+        res = extract_feishu.extract(payload, platform=args.platform)
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        w.write_json(args.out, res)
+        output({"ok": True, "out": str(args.out), "total_items": res["numbered_item_count"], "title": res["title"]})
+        return 0
+    if args.command == "chatgpt-sheet":
+        import multi_search_resolver
+        run_p = args.run.resolve()
+        st = w.read_json(run_p / "run.json")
+        unresolved = [it for it in st.get("items", []) if it.get("exception") or not it.get("canonical_url")]
+        sheet = multi_search_resolver.generate_chatgpt_search_sheet(unresolved)
+        p_file = run_p / "evidence" / "chatgpt_search_prompt.txt"
+        p_file.parent.mkdir(parents=True, exist_ok=True)
+        p_file.write_text(sheet["prompt"], encoding="utf-8")
+        sheet["prompt_file"] = str(p_file)
+        output(sheet)
+        return 0
+    if args.command == "search-missing":
+        import multi_search_resolver
+        run_p = args.run.resolve()
+        st = w.read_json(run_p / "run.json")
+        applied_results = []
+        if args.chatgpt_results and args.chatgpt_results.is_file():
+            cg_data = json.loads(args.chatgpt_results.read_text(encoding="utf-8"))
+            if isinstance(cg_data, dict) and "results" in cg_data:
+                cg_data = cg_data["results"]
+            app_res = multi_search_resolver.apply_search_resolutions_to_state(run_p, st, cg_data)
+            applied_results.append({"source": "chatgpt_results", "result": app_res})
+        # Bilibili API search
+        unresolved = [it for it in st.get("items", []) if it.get("exception") or not it.get("canonical_url")]
+        bili_found = []
+        for it in unresolved:
+            cand = multi_search_resolver.find_best_bilibili_candidate(it)
+            if cand:
+                bili_found.append(cand)
+        if bili_found:
+            b_res = multi_search_resolver.apply_search_resolutions_to_state(run_p, st, bili_found)
+            applied_results.append({"source": "bilibili_search", "result": b_res})
+        output({"actions": applied_results, "remaining_unresolved": sum(1 for it in st.get("items", []) if it.get("exception") or not it.get("canonical_url"))})
+        return 0
+    if args.command == "collect-plan":
+        import real_collector
+        run_p = args.run.resolve()
+        st = w.read_json(run_p / "run.json")
+        scripts = {}
+        for plat in ("bilibili", "douyin"):
+            target = st["targets"][plat]
+            plan = w.plan_collection(st, run_p, plat)
+            if plat == "bilibili":
+                js = real_collector.generate_bilibili_browser_script(target["folder_name"], target["folder_id"], plan["missing_ids"])
+            else:
+                js = real_collector.generate_douyin_browser_script(target["folder_name"], target["folder_id"], plan["missing_ids"])
+            f_path = run_p / "evidence" / f"collect_{plat}.js"
+            f_path.write_text(js, encoding="utf-8")
+            scripts[plat] = {"script_file": str(f_path), "missing_count": len(plan["missing_ids"]), "target_folder": target["folder_name"]}
+        output({"ok": True, "plans": scripts})
         return 0
     if args.command == "init":
         run = args.run.resolve()
