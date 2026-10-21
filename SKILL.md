@@ -136,8 +136,8 @@ Agent 必须严格按照以下 4 步执行收藏闭环，绝不可跳步：
    - **防风控间隔**：每条操作强制间隔 $\ge 5$ 秒。
 
 2. **步骤 2：Agent 真实调起浏览器执行脚本**：
-   - **对于抖音**：Agent 通过 `cua_repl` 在当前已登录抖音标签页中执行 `collect_douyin_categorized.js`（分类模式）或 `collect_douyin.js` 的内容；
-   - **对于 B 站**：Agent 通过 `cua_repl` 在已登录 B 站标签页中执行 `collect_bilibili_categorized.js`（分类模式）或 `collect_bilibili.js` 的内容；
+   - **对于抖音**：Agent 通过 cua_repl 在当前已登录抖音标签页中执行 collect_douyin.js 的内容（直点默认收藏 / 单一总夹，彻底废弃繁琐的板块分类文件夹，杜绝多级文件夹弹窗定位失败）；
+   - **对于 B 站**：Agent 通过 cua_repl 在已登录 B 站标签页中执行 collect_bilibili.js 的内容（直点默认收藏 / 单一总夹，API 与 UI 优先收纳，不建碎片化小文件夹）；
    - **异常阻断**：若脚本返回 `{ success: false, error: "not_logged_in" }`，Agent **必须立即停下向用户请求登录**，严禁伪造成功！
 
 3. **步骤 3：真实回执登记与状态落盘**：
