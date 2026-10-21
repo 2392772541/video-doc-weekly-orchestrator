@@ -279,9 +279,10 @@ def capture_item_screenshot(run_dir: Path, item: dict, sources: dict | None = No
     return None
 
 
-def smart_capture_item_screenshot(run_dir: Path, item: dict, sources: dict | None = None) -> dict:
+def smart_capture_item_screenshot(run_dir: Path, item: dict, sources: dict | None = None, used_timestamps: set[float] | None = None) -> dict:
     """Accurately captures an item screenshot verifying that the frame actually contains
-    the item's number (e.g. 25) and/or title keywords. Also auto-heals if an on-screen URL is seen.
+    the item's number (e.g. 25) and/or title keywords with strict gating and ROI card cropping.
+    Also auto-heals if an on-screen URL is seen, strictly enforcing mutual exclusion.
     """
     run_dir = Path(run_dir).resolve()
     # Mutual exclusion: items with canonical_url must NOT have screenshots
@@ -306,10 +307,23 @@ def smart_capture_item_screenshot(run_dir: Path, item: dict, sources: dict | Non
                 pass
 
     best_sec = ts
+    key = item.get("key") or "item"
+    safe_key = re.sub(r"[^\w\-]", "_", key)
+    screen_dir = run_dir / "evidence" / "screenshots"
+    screen_dir.mkdir(parents=True, exist_ok=True)
+    card_target = screen_dir / f"{safe_key}_{int(ts)}s_card.jpg"
+
     if video_path and Path(video_path).is_file():
         try:
             import multi_search_resolver
-            loc = multi_search_resolver.find_item_in_video_timeline(video_path, item.get("number"), item.get("title", ""), ts)
+            loc = multi_search_resolver.find_item_in_video_timeline(
+                video_path,
+                item.get("number"),
+                item.get("title", ""),
+                ts,
+                used_timestamps=used_timestamps,
+                card_output_path=card_target
+            )
             if loc.get("found_url"):
                 cand = loc["found_url"]
                 ver = verify_candidate_for_item(item, cand)
@@ -328,10 +342,20 @@ def smart_capture_item_screenshot(run_dir: Path, item: dict, sources: dict | Non
                     item.pop("candidate_url", None)
                     return {"healed": True, "resolved_url": curl, "platform": cplat, "key": item.get("key")}
             best_sec = loc.get("best_frame_sec", ts)
+            if loc.get("card_path") and Path(loc["card_path"]).is_file():
+                rel_card = f"evidence/screenshots/{Path(loc['card_path']).name}"
+                item["screenshot"] = rel_card
+                if used_timestamps is not None:
+                    used_timestamps.add(best_sec)
+                capture_item_screenshot(run_dir, item, sources, timestamp=best_sec)
+                item["screenshot"] = rel_card
+                return {"healed": False, "screenshot": rel_card, "key": item.get("key"), "timestamp_seconds": best_sec}
         except Exception:
             best_sec = ts
 
     rel_path = capture_item_screenshot(run_dir, item, sources, timestamp=best_sec)
+    if used_timestamps is not None:
+        used_timestamps.add(best_sec)
     return {"healed": False, "screenshot": rel_path, "key": item.get("key"), "timestamp_seconds": best_sec}
 
 
@@ -361,6 +385,7 @@ def capture_screenshots_for_run(run_dir: Path, state: dict, keys: list[str] | No
     items = state.get("items", [])
     sources = state.get("sources", {})
     target_keys = set(keys) if keys else None
+    used_timestamps = set()
     
     for it in items:
         k = it.get("key")
@@ -372,7 +397,7 @@ def capture_screenshots_for_run(run_dir: Path, state: dict, keys: list[str] | No
                 continue
                 
         if smart:
-            res = smart_capture_item_screenshot(run_dir, it, sources)
+            res = smart_capture_item_screenshot(run_dir, it, sources, used_timestamps=used_timestamps)
             if res.get("healed"):
                 healed.append(res)
                 state["layout"] = [b for b in state.get("layout", []) if not (b.get("type") == "image" and b.get("owner_key") == k)]

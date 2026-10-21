@@ -1996,6 +1996,35 @@ Hope this helps!'''
         self.assertIsNone(res["screenshot"])
         self.assertNotIn("screenshot", item)
 
+    def test_strict_number_gate_excludes_years(self):
+        import re
+        num_str = "25"
+        strict_num_re = re.compile(r"(?:^|\s)" + re.escape(num_str) + r"(?:[\.、\s]|$)")
+        
+        breadcrumb = "且曼海纳科技有限公司>且曼周刊v3.0>2024且曼周刊>2025-2026且曼周刊"
+        cleaned = re.sub(r"202[0-9]", "", breadcrumb)
+        self.assertIsNone(strict_num_re.search(cleaned))
+        
+        actual_line = "25.耶茨谈论正式组时的强度就好比...拼尽全力才对."
+        cleaned_actual = re.sub(r"202[0-9]", "", actual_line)
+        self.assertIsNotNone(strict_num_re.search(cleaned_actual))
+
+    def test_roi_card_crop_dimensions(self):
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as tmpdir:
+            img = Image.new("RGB", (1920, 1080), color=(255, 255, 255))
+            box = [[325.0, 312.0], [637.0, 312.0], [637.0, 329.0], [325.0, 329.0]]
+            xs = [p[0] for p in box]
+            ys = [p[1] for p in box]
+            x1, y1 = max(0, int(min(xs)) - 35), max(0, int(min(ys)) - 25)
+            x2, y2 = min(1920, int(max(xs)) + 450), min(1080, int(max(ys)) + 45)
+            crop_img = img.crop((x1, y1, x2, y2))
+            out_path = Path(tmpdir) / "card.jpg"
+            crop_img.save(str(out_path))
+            self.assertTrue(out_path.is_file())
+            self.assertLess(crop_img.size[0], 1920)
+            self.assertLess(crop_img.size[1], 1080)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

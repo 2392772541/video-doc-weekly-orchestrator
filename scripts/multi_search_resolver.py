@@ -365,10 +365,19 @@ def scan_video_timeline_for_links(video_path: str | Path, start_sec: float = 0, 
     return discovered
 
 
-def find_item_in_video_timeline(video_path: str | Path, item_num: int | str | None, item_title: str, approx_sec: float, window_sec: float = 45.0, step_sec: float = 5.0) -> dict:
+def find_item_in_video_timeline(
+    video_path: str | Path,
+    item_num: int | str | None,
+    item_title: str,
+    approx_sec: float,
+    window_sec: float = 90.0,
+    step_sec: float = 5.0,
+    used_timestamps: set[float] | None = None,
+    card_output_path: Path | str | None = None
+) -> dict:
     """Searches around approx_sec for the exact video frame where item_num and/or item_title
-    is visibly presented on screen. Also inspects if a video URL is visible.
-    Returns best frame seconds and any discovered on-screen URL.
+    is visibly presented on screen with strict number prefix verification and collision avoidance.
+    Also extracts screen-visible video URLs (auto-healing) and optionally crops a focused ROI card.
     """
     v_path = Path(video_path).resolve()
     default_res = {
@@ -376,7 +385,8 @@ def find_item_in_video_timeline(video_path: str | Path, item_num: int | str | No
         "found_url": None,
         "confidence": 0.0,
         "reason": "fallback_approx_sec",
-        "ocr_lines": []
+        "ocr_lines": [],
+        "card_path": None
     }
     if not v_path.is_file():
         return default_res
@@ -396,10 +406,12 @@ def find_item_in_video_timeline(video_path: str | Path, item_num: int | str | No
     best_sec = approx_sec
     best_score = -1.0
     best_lines = []
+    best_box = None
     found_url = None
 
     clean_t = extract_title_core_tokens(item_title)
     num_str = str(item_num).strip() if item_num is not None else ""
+    strict_num_re = re.compile(r"(?:^|\s)" + re.escape(num_str) + r"(?:[\.、\s]|$)") if num_str else None
 
     with tempfile.TemporaryDirectory(prefix="weekly_find_") as tmpdir:
         tmp_p = Path(tmpdir)
@@ -425,23 +437,38 @@ def find_item_in_video_timeline(video_path: str | Path, item_num: int | str | No
                         full_text = " ".join(lines)
                         tokens = extract_title_core_tokens(full_text)
 
-                        score = 0.0
-                        if num_str:
-                            num_patterns = [f"{num_str}.", f"{num_str}、", f"{num_str} ", f"#{num_str}", f"【{num_str}】", f"[{num_str}]", f"第{num_str}"]
-                            if any(p in full_text for p in num_patterns) or re.search(rf"\b{num_str}\b", full_text):
-                                score += 1.5
+                        num_matched = False
+                        current_box = None
+                        if strict_num_re:
+                            for item in res:
+                                box, text = item[0], item[1]
+                                # Filter out 4-digit years like 2024, 2025, 2026 to prevent false match on 25
+                                cleaned_text = re.sub(r"202[0-9]", "", text)
+                                if strict_num_re.search(cleaned_text):
+                                    # Exclude drama episode numbers (e.g. 第5集) when item is not that number
+                                    if re.search(r"第" + re.escape(num_str) + r"[集话期]", text) and not num_str.startswith("第") and not strict_num_re.search(re.sub(r"第\d+[集话期]", "", text)):
+                                        continue
+                                    num_matched = True
+                                    current_box = box
+                                    break
 
+                        score = 2.0 if num_matched else 0.0
                         if clean_t:
                             if clean_t in tokens:
                                 score += 2.0
                             else:
                                 common = sum(1 for ch in clean_t if ch in tokens)
-                                score += (common / max(len(clean_t), 1)) * 1.5
+                                score += (common / max(len(clean_t), 1)) * 1.8
+
+                        # Avoid reusing an identical timestamp already taken by another item
+                        if used_timestamps and any(abs(curr_sec - ut) < 15.0 for ut in used_timestamps):
+                            if not num_matched:
+                                score -= 2.0
 
                         cands = resolve_links.extract_candidate_urls_from_ocr_lines(lines)
                         for cand in cands:
                             ev = evaluate_candidate_match(item_title, "", cand.get("title", ""), "")
-                            if score >= 1.0 or ev["matched"]:
+                            if score >= 1.5 or ev["matched"]:
                                 found_url = cand
                                 found_url["timestamp_seconds"] = curr_sec
                                 break
@@ -450,8 +477,9 @@ def find_item_in_video_timeline(video_path: str | Path, item_num: int | str | No
                             best_score = score
                             best_sec = curr_sec
                             best_lines = lines[:6]
+                            best_box = current_box
 
-                        if best_score >= 2.5 or found_url:
+                        if (best_score >= 3.5 and num_matched) or found_url:
                             break
                     try:
                         frame_file.unlink()
@@ -461,12 +489,56 @@ def find_item_in_video_timeline(video_path: str | Path, item_num: int | str | No
                 pass
             curr_sec += step_sec
 
+    # Optional ROI Card Cropping with PIL
+    saved_card = None
+    if card_output_path and best_box and best_sec is not None:
+        temp_frame_path = None
+        try:
+            from PIL import Image
+            with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tf:
+                temp_frame_path = tf.name
+            cmd = [
+                ffmpeg, "-y",
+                "-ss", f"{best_sec:.2f}",
+                "-i", str(v_path),
+                "-frames:v", "1",
+                "-q:v", "2",
+                temp_frame_path
+            ]
+            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
+            if Path(temp_frame_path).is_file():
+                img = Image.open(temp_frame_path)
+                w, h = img.size
+                xs = [p[0] for p in best_box]
+                ys = [p[1] for p in best_box]
+                x1 = max(0, int(min(xs)) - 35)
+                y1 = max(0, int(min(ys)) - 25)
+                if min(xs) < 650 and max(xs) <= 650:
+                    x2 = min(645, max(int(max(xs)) + 15, x1 + 100))
+                else:
+                    x2 = min(w, int(max(xs)) + 450)
+                y2 = min(h, int(max(ys)) + 45)
+                crop_img = img.crop((x1, y1, x2, y2))
+                card_out = Path(card_output_path)
+                card_out.parent.mkdir(parents=True, exist_ok=True)
+                crop_img.save(str(card_out))
+                saved_card = str(card_out)
+        except Exception:
+            pass
+        finally:
+            if temp_frame_path and Path(temp_frame_path).is_file():
+                try:
+                    Path(temp_frame_path).unlink(missing_ok=True)
+                except Exception:
+                    pass
+
     return {
         "best_frame_sec": best_sec,
         "found_url": found_url,
         "confidence": round(best_score, 2),
         "reason": f"matched_frame_at_{int(best_sec)}s_score_{round(best_score, 2)}",
-        "ocr_lines": best_lines
+        "ocr_lines": best_lines,
+        "card_path": saved_card
     }
 
 
