@@ -168,12 +168,29 @@ def verify_resolution(item: dict, candidate_url: str, candidate_title: str = "",
             title_match = True
         else:
             common = sum(1 for c in clean_orig_title if c in clean_c_title)
-            if common >= max(6, len(clean_orig_title) * 0.6):
+            has_core_token = any(clean_orig_title[i:i+4] in clean_c_title for i in range(len(clean_orig_title) - 3))
+            if has_core_token and common >= max(5, int(len(clean_orig_title) * 0.4)):
                 title_match = True
-                
+            elif common >= max(6, int(len(clean_orig_title) * 0.6)):
+                title_match = True
+
+    # Check body text corroboration
+    body_text = re.sub(r"[^\w\u4e00-\u9fff]", "", item.get("body", "") or "").lower()
+    if body_text and clean_c_title:
+        if clean_c_title in body_text or (len(clean_c_title) >= 6 and sum(1 for c in clean_c_title if c in body_text) >= len(clean_c_title) * 0.6):
+            title_match = True
+
     author_match = True
+    generic_authors = {"且曼", "水球泡", "未知", "且曼内刊"}
     if orig_author and candidate_author:
-        author_match = (orig_author in candidate_author) or (candidate_author in orig_author)
+        if orig_author in generic_authors:
+            author_match = True
+        elif (orig_author in candidate_author) or (candidate_author in orig_author):
+            author_match = True
+        elif body_text and candidate_author.lower() in body_text:
+            author_match = True
+        else:
+            author_match = False
         
     prefix_match = False
     orig_url = (item.get("url") or item.get("original_url") or "").strip()
@@ -261,6 +278,63 @@ def capture_item_screenshot(run_dir: Path, item: dict, sources: dict | None = No
         pass
     return None
 
+
+def smart_capture_item_screenshot(run_dir: Path, item: dict, sources: dict | None = None) -> dict:
+    """Accurately captures an item screenshot verifying that the frame actually contains
+    the item's number (e.g. 25) and/or title keywords. Also auto-heals if an on-screen URL is seen.
+    """
+    run_dir = Path(run_dir).resolve()
+    # Mutual exclusion: items with canonical_url must NOT have screenshots
+    if item.get("canonical_url"):
+        item.pop("screenshot", None)
+        return {"healed": False, "screenshot": None, "key": item.get("key"), "reason": "item_already_has_url"}
+
+    src = item.get("source") or {}
+    source_id = src.get("source_id")
+    ts = src.get("timestamp_seconds", 0)
+
+    video_path = None
+    if sources and source_id in sources:
+        video_path = sources[source_id].get("path")
+    if not video_path or not Path(video_path).is_file():
+        run_file = run_dir / "run.json"
+        if run_file.is_file():
+            try:
+                run_data = json.loads(run_file.read_text(encoding="utf-8"))
+                video_path = run_data.get("sources", {}).get(source_id, {}).get("path")
+            except Exception:
+                pass
+
+    best_sec = ts
+    if video_path and Path(video_path).is_file():
+        try:
+            import multi_search_resolver
+            loc = multi_search_resolver.find_item_in_video_timeline(video_path, item.get("number"), item.get("title", ""), ts)
+            if loc.get("found_url"):
+                cand = loc["found_url"]
+                ver = verify_candidate_for_item(item, cand)
+                if ver.get("matched"):
+                    curl = ver["resolved_url"]
+                    cplat = ver["platform"]
+                    item["canonical_url"] = curl
+                    item["url"] = curl
+                    item["id"] = ver["id"]
+                    item["platform"] = cplat
+                    item["kind"] = "video" if cplat in ("douyin", "bilibili") else "link"
+                    item["resolved_by"] = "video_frame_ocr_verified"
+                    item.pop("exception", None)
+                    item.pop("screenshot", None)
+                    item.pop("candidates", None)
+                    item.pop("candidate_url", None)
+                    return {"healed": True, "resolved_url": curl, "platform": cplat, "key": item.get("key")}
+            best_sec = loc.get("best_frame_sec", ts)
+        except Exception:
+            best_sec = ts
+
+    rel_path = capture_item_screenshot(run_dir, item, sources, timestamp=best_sec)
+    return {"healed": False, "screenshot": rel_path, "key": item.get("key"), "timestamp_seconds": best_sec}
+
+
 def attach_search_candidate(item: dict, candidate_url: str, candidate_title: str = "", candidate_author: str = "", screenshot_path: str = None, reason: str = "") -> dict:
     """Attaches a candidate found via text search along with its source video screenshot for manual user verification."""
     if "candidates" not in item:
@@ -280,8 +354,10 @@ def attach_search_candidate(item: dict, candidate_url: str, candidate_title: str
         item["screenshot"] = screenshot_path
     return candidate_record
 
-def capture_screenshots_for_run(run_dir: Path, state: dict, keys: list[str] | None = None) -> dict:
+def capture_screenshots_for_run(run_dir: Path, state: dict, keys: list[str] | None = None, smart: bool = True) -> dict:
+    run_dir = Path(run_dir).resolve()
     captured = []
+    healed = []
     items = state.get("items", [])
     sources = state.get("sources", {})
     target_keys = set(keys) if keys else None
@@ -295,11 +371,26 @@ def capture_screenshots_for_run(run_dir: Path, state: dict, keys: list[str] | No
             if not is_unresolved:
                 continue
                 
-        rel = capture_item_screenshot(run_dir, it, sources)
-        if rel:
-            captured.append({"key": k, "title": it.get("title"), "screenshot": rel})
-            
-    return {"total_captured": len(captured), "captured": captured}
+        if smart:
+            res = smart_capture_item_screenshot(run_dir, it, sources)
+            if res.get("healed"):
+                healed.append(res)
+                state["layout"] = [b for b in state.get("layout", []) if not (b.get("type") == "image" and b.get("owner_key") == k)]
+            elif res.get("screenshot"):
+                captured.append({"key": k, "title": it.get("title"), "screenshot": res["screenshot"], "timestamp": res.get("timestamp_seconds")})
+        else:
+            rel = capture_item_screenshot(run_dir, it, sources)
+            if rel:
+                captured.append({"key": k, "title": it.get("title"), "screenshot": rel})
+
+    if healed:
+        inv = state.get("inventory", {})
+        if "review" in inv and inv["review"]:
+            inv_keys = [i["key"] for i in items]
+            inv["review"]["binding"] = w.digest({"layout": state["layout"], "inventory": inv_keys})
+
+    w.write_json(run_dir / "run.json", state)
+    return {"total_captured": len(captured), "captured": captured, "healed_count": len(healed), "healed": healed}
 
 
 
@@ -395,6 +486,20 @@ def auto_heal_from_screenshots(run_dir: Path, state: dict, keys: list[str] | Non
     target_keys = set(keys) if keys else None
 
     existing_ids = {it.get("id") for it in items if it.get("id") and not it.get("exception")}
+    frame_urls_file = run_dir / "frame_urls.json"
+    timeline_cands = []
+    if frame_urls_file.is_file():
+        try:
+            f_data = json.loads(frame_urls_file.read_text(encoding="utf-8"))
+            if isinstance(f_data, dict):
+                for _, c_list in f_data.items():
+                    if isinstance(c_list, list):
+                        timeline_cands.extend(c_list)
+            elif isinstance(f_data, list):
+                timeline_cands.extend(f_data)
+        except Exception:
+            pass
+
 
     healed = []
     skipped = []
@@ -462,6 +567,36 @@ def auto_heal_from_screenshots(run_dir: Path, state: dict, keys: list[str] | Non
                     break
             if item_healed:
                 break
+        
+        if not item_healed and timeline_cands:
+            for tc in timeline_cands:
+                ver = verify_candidate_for_item(it, tc, existing_ids)
+                if ver.get("matched"):
+                    cid = ver["id"]
+                    cplat = ver["platform"]
+                    curl = ver["resolved_url"]
+                    it["canonical_url"] = curl
+                    it["url"] = curl
+                    it["id"] = cid
+                    it["platform"] = cplat
+                    it["kind"] = "video" if cplat in ("douyin", "bilibili") else "link"
+                    it["resolved_by"] = "timeline_frame_ocr"
+                    it.pop("exception", None)
+                    it.pop("screenshot", None)
+                    it.pop("candidates", None)
+                    it.pop("candidate_url", None)
+                    existing_ids.add(cid)
+                    state["layout"] = [b for b in state.get("layout", []) if not (b.get("type") == "image" and b.get("owner_key") == k)]
+                    healed.append({
+                        "key": k,
+                        "title": it.get("title"),
+                        "resolved_url": curl,
+                        "platform": cplat,
+                        "method": "timeline_frame_ocr"
+                    })
+                    item_healed = True
+                    break
+
         if not item_healed:
             skipped.append(k)
 

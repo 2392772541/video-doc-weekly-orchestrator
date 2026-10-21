@@ -1917,7 +1917,87 @@ class MultiSearchAndCollectorTests(unittest.TestCase):
 
 
 
-if __name__ == "__main__":
 
+
+class ZeroOmissionRecoveryTests(unittest.TestCase):
+    def test_generate_search_queries_decomposition(self):
+        import multi_search_resolver as ms
+        item = {
+            "title": "第47集|女性身体是如何被商品化的？",
+            "author": "山羊歌",
+            "key": "test1"
+        }
+        queries = ms.generate_search_queries_for_item(item)
+        self.assertTrue(any("山羊歌" in q for q in queries))
+        self.assertTrue(any("女性身体是如何被商品化的" in q for q in queries))
+
+        item2 = {
+            "title": "AI周报（盘点一周AI大事 10月18日）｜Fable 5.5年度最强",
+            "author": "产品君",
+            "key": "test2"
+        }
+        queries2 = ms.generate_search_queries_for_item(item2)
+        self.assertTrue(any("盘点一周AI大事" in q for q in queries2))
+        self.assertTrue(any("Fable 5.5年度最强" in q for q in queries2))
+
+    def test_parse_chatgpt_response_formats(self):
+        import multi_search_resolver as ms
+        # 1. Raw json list
+        raw1 = '[{"key": "k1", "url": "https://www.bilibili.com/video/BV1xx"}]'
+        res1 = ms.parse_chatgpt_response(raw1)
+        self.assertEqual(len(res1), 1)
+        self.assertEqual(res1[0]["key"], "k1")
+
+        # 2. Markdown codeblock
+        raw2 = '''Here are your results:
+```json
+[
+  {"key": "k2", "url": "https://www.douyin.com/video/7685278721850363170", "title": "北京生活"}
+]
+```
+Hope this helps!'''
+        res2 = ms.parse_chatgpt_response(raw2)
+        self.assertEqual(len(res2), 1)
+        self.assertEqual(res2[0]["key"], "k2")
+
+        # 3. Dict with results key
+        raw3 = '{"results": [{"key": "k3", "url": "https://www.bilibili.com/video/BV1yy"}]}'
+        res3 = ms.parse_chatgpt_response(raw3)
+        self.assertEqual(len(res3), 1)
+        self.assertEqual(res3[0]["key"], "k3")
+
+    def test_verify_resolution_core_token_and_generic_author(self):
+        import resolve_links
+        # Case from Vol.298: original author listed as 且曼, candidate author is real creator
+        item = {
+            "title": "“第一学历”竟成了无法逾越的天堑？",
+            "author": "且曼",
+            "key": "i0013",
+            "body": "晓哥聊升学就业关于第一学历的深入剖析"
+        }
+        cand_url = "https://www.douyin.com/video/7687193111033957658"
+        cand_title = "第一学历，怎么就成了“终身案底”了呢？"
+        cand_author = "晓哥聊升学就业"
+
+        ver = resolve_links.verify_resolution(item, cand_url, cand_title, cand_author)
+        self.assertTrue(ver["verified"])
+        self.assertEqual(ver["platform"], "douyin")
+
+    def test_smart_capture_mutual_exclusion(self):
+        import resolve_links
+        # Item with canonical_url must NOT have screenshots
+        item = {
+            "key": "test_linked",
+            "title": "已有链接的条目",
+            "canonical_url": "https://www.bilibili.com/video/BV1QgY86XEXs",
+            "screenshot": "evidence/screenshots/old.jpg"
+        }
+        res = resolve_links.smart_capture_item_screenshot(Path("."), item)
+        self.assertIsNone(res["screenshot"])
+        self.assertNotIn("screenshot", item)
+
+
+if __name__ == "__main__":
     unittest.main(verbosity=2)
+
 

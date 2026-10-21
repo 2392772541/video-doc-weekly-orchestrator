@@ -255,6 +255,18 @@ def run_pipeline(run_dir: Path | str, manifest_path: Path | str, mode: str = "fu
     chatgpt_sheet = multi_search_resolver.generate_chatgpt_search_sheet(rem_unresolved)
     (evidence_dir / "chatgpt_search_prompt.txt").write_text(chatgpt_sheet["prompt"], encoding="utf-8")
 
+    # 4.5. Enforce strict mutual exclusion & capture precise frames for truly unlinked items
+    for it in state.get("items", []):
+        k = it.get("key")
+        if it.get("canonical_url"):
+            it.pop("screenshot", None)
+            it.pop("exception", None)
+            state["layout"] = [b for b in state.get("layout", []) if not (b.get("type") == "image" and b.get("owner_key") == k)]
+
+    unresolved_keys = [it.get("key") for it in state.get("items", []) if not it.get("canonical_url")]
+    if unresolved_keys:
+        resolve_links.capture_screenshots_for_run(run_path, state, keys=unresolved_keys, smart=True)
+
     # 5. Render Documents (Strict mutual exclusion enforced)
     render_res = w.render(state, run_path, allow_partial=True)
 

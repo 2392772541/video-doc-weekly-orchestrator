@@ -75,6 +75,11 @@ def parser():
     scan_sc = sub.add_parser("scan-screenshots", help="OCR-scan video screenshots to automatically discover and heal embedded video links")
     scan_sc.add_argument("--run", type=Path, required=True)
     scan_sc.add_argument("--keys", nargs="*", default=None)
+    scan_v = sub.add_parser("scan-video", help="Scan recording video timeline with RapidOCR to discover on-screen URLs and titles")
+    scan_v.add_argument("--run", type=Path, required=True)
+    scan_v.add_argument("--video", type=Path, help="Optional path to video file (defaults to sources in run.json)")
+    scan_v.add_argument("--step", type=float, default=15.0, help="Sampling step in seconds (default 15s)")
+    scan_v.add_argument("--max-frames", type=int, default=200, help="Maximum frames to sample per video")
     heal = sub.add_parser("auto-heal", help="End-to-end auto-heal: OCR screenshots, recover links, remove redundant images, and rebind layout")
     heal.add_argument("--run", type=Path, required=True)
     heal.add_argument("--keys", nargs="*", default=None)
@@ -183,6 +188,27 @@ def main(argv=None):
         w.write_json(args.out, res)
         output({"ok": True, "out": str(args.out), "total_items": res["numbered_item_count"], "title": res["title"]})
         return 0
+    if args.command == "scan-video":
+        import multi_search_resolver
+        import resolve_links
+        run_p = args.run.resolve()
+        st = w.read_json(run_p / "run.json")
+        video_paths = []
+        if args.video and args.video.is_file():
+            video_paths.append(args.video.resolve())
+        else:
+            for sid, sinfo in st.get("sources", {}).items():
+                p = sinfo.get("path")
+                if p and Path(p).is_file():
+                    video_paths.append(Path(p).resolve())
+        all_discovered = []
+        for vp in video_paths:
+            disc = multi_search_resolver.scan_video_timeline_for_links(vp, step_sec=args.step, max_frames=args.max_frames)
+            all_discovered.extend(disc)
+        w.write_json(run_p / "frame_urls.json", all_discovered)
+        heal_res = resolve_links.auto_heal_from_screenshots(run_p, st)
+        output({"scanned_videos": [str(p) for p in video_paths], "discovered_urls_count": len(all_discovered), "auto_healed": heal_res})
+        return 0
     if args.command == "chatgpt-sheet":
         import multi_search_resolver
         run_p = args.run.resolve()
@@ -201,11 +227,11 @@ def main(argv=None):
         st = w.read_json(run_p / "run.json")
         applied_results = []
         if args.chatgpt_results and args.chatgpt_results.is_file():
-            cg_data = json.loads(args.chatgpt_results.read_text(encoding="utf-8"))
-            if isinstance(cg_data, dict) and "results" in cg_data:
-                cg_data = cg_data["results"]
-            app_res = multi_search_resolver.apply_search_resolutions_to_state(run_p, st, cg_data)
-            applied_results.append({"source": "chatgpt_results", "result": app_res})
+            raw_text = args.chatgpt_results.read_text(encoding="utf-8")
+            cg_data = multi_search_resolver.parse_chatgpt_response(raw_text)
+            if cg_data:
+                app_res = multi_search_resolver.apply_search_resolutions_to_state(run_p, st, cg_data)
+                applied_results.append({"source": "chatgpt_results", "result": app_res})
         # Bilibili API search
         unresolved = [it for it in st.get("items", []) if it.get("exception") or not it.get("canonical_url")]
         bili_found = []
