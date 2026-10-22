@@ -376,6 +376,22 @@ def generate_douyin_browser_script(target_folder: str, folder_id_str: str, items
 
     // Stage 2: Batch Add into Target Folder from User Homepage
     console.log(`[DouyinCollector][Stage 2] Navigating to user favorites folder: ${{targetFolder}}`);
+    let folderCountBefore = 0;
+    let folderCountAfter = 0;
+    try {{
+        await tab.goto("https://www.douyin.com/user/self?showSubTab=favorite_folder&showTab=favorite_collection");
+        await tab.playwright.waitForTimeout(3000);
+
+        folderCountBefore = await tab.playwright.evaluate((name) => {{
+            const span = Array.from(document.querySelectorAll("*")).find(el => el.children.length === 0 && el.innerText === name);
+            const p = span?.parentElement?.parentElement?.parentElement || span?.closest("li") || span?.closest("div");
+            const m = p?.innerText?.match(/共\\s*(\\d+)\\s*作品/);
+            return m ? parseInt(m[1], 10) : 0;
+        }}, targetFolder);
+    }} catch (e) {{
+        console.log("[DouyinCollector] Pre-count read error:", e);
+    }}
+
     try {{
         // Enforce 1400x900 viewport to eliminate Semi Modal 682px clipping
         try {{
@@ -400,23 +416,49 @@ def generate_douyin_browser_script(target_folder: str, folder_id_str: str, items
                 await tab.playwright.waitForTimeout(3000);
 
                 // Adaptive multi-locator for Semi Modal virtualized grid
-                let cards = tab.playwright.locator('.fZVrW1rH .semi-checkbox, .fZVrW1rH .NWh9vMMV, ul[data-e2e="scroll-list"] li .NWh9vMMV, .collection-add-modal li .checkbox, .modal-scroll-list li .semi-checkbox');
+                let cards = tab.playwright.locator(".fZVrW1rH .semi-checkbox, .fZVrW1rH .NWh9vMMV, ul[data-e2e=\"scroll-list\"] li .NWh9vMMV, .collection-add-modal li .checkbox, .modal-scroll-list li .semi-checkbox");
                 let cardCount = await cards.count();
-                let toCheckCount = Math.min(cardCount, items.length);
-                console.log(`[DouyinCollector][Stage 2] Selecting ${{toCheckCount}} cards in modal...`);
-                for (let c = 0; c < toCheckCount; c++) {{
-                    let card = cards.nth(c);
-                    try {{
-                        await card.scrollIntoViewIfNeeded({{ timeout: 1500 }});
-                    }} catch (e) {{}}
-                    await card.click();
-                    await tab.playwright.waitForTimeout(150);
-                }}
-                await tab.playwright.waitForTimeout(1000);
+                const colXs = [5, 100, 300, 500, 625];
+                const targetIds = items.map(x => x.id);
+                let selectedCount = 0;
 
-                let okBtn = tab.playwright.locator('.i5w2sw6C button, .modal-pannel button, button:has-text("确定"), button.semi-button-primary').first();
+                for (let pass = 0; pass < 6; pass++) {{
+                    let cardInfos = await tab.playwright.evaluate((ids) => {{
+                        const lis = Array.from(document.querySelectorAll(".fZVrW1rH li"));
+                        const results = [];
+                        lis.forEach((li, idx) => {{
+                            const a = li.querySelector("a");
+                            const cb = li.querySelector("input[type=\"checkbox\"]");
+                            if (a && a.href) {{
+                                for (let id of ids) {{
+                                    if (a.href.includes(id)) {{
+                                        const r = li.getBoundingClientRect();
+                                        results.push({{ id, idx, checked: cb ? cb.checked : false, col: idx % 5, top: r.top, height: r.height }});
+                                        break;
+                                    }}
+                                }}
+                            }}
+                        }});
+                        return results;
+                    }}, targetIds);
+
+                    let toClick = cardInfos.filter(c => !c.checked && c.top >= 150 && c.top <= 800);
+                    for (let c of toClick) {{
+                        let x = colXs[c.col] || 300;
+                        let y = c.top + c.height / 2;
+                        try {{ await tab.click([x, y]); selectedCount++; await tab.playwright.waitForTimeout(150); }} catch (e) {{}}
+                    }}
+                    if (cardInfos.length === 0 || cardInfos.every(c => c.checked) || selectedCount >= items.length) break;
+                    try {{ await tab.scroll([300, 400], "down", 2); await tab.playwright.waitForTimeout(1000); }} catch (e) {{}}
+                }}
+
+                let okBtn = tab.playwright.locator(".i5w2sw6C button, .modal-pannel button, button:has-text(\"确定\"), button.semi-button-primary").first();
                 if (await okBtn.count() > 0) {{
-                    await okBtn.click();
+                    try {{
+                        await okBtn.press("Enter");
+                    }} catch (e) {{
+                        await okBtn.click({{ force: true }});
+                    }}
                     await tab.playwright.waitForTimeout(3000);
                 }}
             }}
@@ -425,16 +467,30 @@ def generate_douyin_browser_script(target_folder: str, folder_id_str: str, items
         console.error("[DouyinCollector] Stage 2 modal add error:", err);
     }}
 
+    // Post-verification: Read back updated folder count
+    try {{
+        await tab.goto("https://www.douyin.com/user/self?showSubTab=favorite_folder&showTab=favorite_collection");
+        await tab.playwright.waitForTimeout(2000);
+        folderCountAfter = await tab.playwright.evaluate((name) => {{
+            const span = Array.from(document.querySelectorAll("*")).find(el => el.children.length === 0 && el.innerText === name);
+            const p = span?.parentElement?.parentElement?.parentElement || span?.closest("li") || span?.closest("div");
+            const m = p?.innerText?.match(/共\\s*(\\d+)\\s*作品/);
+            return m ? parseInt(m[1], 10) : 0;
+        }}, targetFolder);
+        console.log(`[DouyinCollector] Post-verification count: ${{folderCountBefore}} -> ${{folderCountAfter}}`);
+    }} catch (e) {{}}
+    const folderIncrementSuccess = folderCountAfter > folderCountBefore || (folderCountBefore > 0 && items.length === 0);
+
     for (let it of items) {{
         receipts.push({{
             id: it.id,
-            outcome: "ui_confirmed",
+            outcome: folderIncrementSuccess ? "ui_confirmed" : "pending_verification",
             at: new Date().toISOString(),
-            ui: {{ folder_name: targetFolder, folder_id: folderIdStr, id: it.id, favorite_visible: true, folder_selected_visible: true }}
+            ui: {{ folder_name: targetFolder, folder_id: folderIdStr, id: it.id, favorite_visible: true, folder_selected_visible: folderIncrementSuccess, count_before: folderCountBefore, count_after: folderCountAfter }}
         }});
     }}
 
-    return {{ success: true, count: receipts.length, receipts }};
+    return {{ success: folderIncrementSuccess, count: receipts.length, receipts, folder_count_before: folderCountBefore, folder_count_after: folderCountAfter }};
 }})();
 """
 

@@ -3,6 +3,7 @@
 Coordinates: discovery -> difference plan -> serial writes (>=5s) -> 2-round readback reconciliation.
 """
 from __future__ import annotations
+import real_collector
 import argparse
 import json
 import os
@@ -26,100 +27,7 @@ def generate_browser_script(run_dir: Path, platform: str, plan_data: dict) -> st
     plan_id = plan_data.get("plan_id", "")
     
     if platform == "douyin":
-        js = f"""// Douyin automated two-stage collection runner (Playwright / In-App Browser)
-(async function runDouyinCollect() {{
-    const targetFolder = "水球泡视频周报";
-    const folderIdStr = "{folder_id}";
-    const itemsToAdd = {json.dumps(to_add)};
-    const planId = "{plan_id}";
-    
-    console.log(`[DouyinCollect] Starting collection for ${{itemsToAdd.length}} items to folder ${{targetFolder}}`);
-    const receipts = [];
-    
-    // Stage 1: Individual Video Favoriting on Playback/Note Pages
-    // Using authoritative locators: .o2tLobnl.nth(2) for videos, [data-e2e="video-player-collect"] for notes
-    for (let i = 0; i < itemsToAdd.length; i++) {{
-        const id = itemsToAdd[i];
-        console.log(`[DouyinCollect][Stage 1] Lighting favorite [${{i + 1}}/${{itemsToAdd.length}}] ID: ${{id}}`);
-        
-        if (i > 0) {{
-            await new Promise(r => setTimeout(r, 5500));
-        }}
-        await tab.goto("https://www.douyin.com/video/" + id);
-        await tab.playwright.waitForTimeout(2000);
-        
-        let o2tCount = await tab.playwright.locator('.o2tLobnl').count();
-        let e2eCount = await tab.playwright.locator('[data-e2e="video-player-collect"]').count();
-        
-        if (o2tCount >= 3) {{
-            let loc = tab.playwright.locator('.o2tLobnl').nth(2);
-            await loc.click();
-            await tab.playwright.waitForTimeout(1000);
-        }} else if (e2eCount > 0) {{
-            let loc = tab.playwright.locator('[data-e2e="video-player-collect"]');
-            let state = await loc.getAttribute('data-e2e-state');
-            if (state !== 'video-player-is-collected') {{
-                let inner = tab.playwright.locator('[data-e2e="video-player-collect"] .semi-icon, [data-e2e="video-player-collect"] .gBYrMC0K').first();
-                if (await inner.count() > 0) {{
-                    await inner.click();
-                }} else {{
-                    await loc.click();
-                }}
-                await tab.playwright.waitForTimeout(1000);
-            }}
-        }}
-    }}
-    
-    // Stage 2: Batch Add into Target Folder from User Homepage
-    console.log(`[DouyinCollect][Stage 2] Navigating to user favorites folder ${{targetFolder}}`);
-    await tab.goto("https://www.douyin.com/user/self?showSubTab=favorite_folder&showTab=favorite_collection");
-    await tab.playwright.waitForTimeout(3000);
-    
-    let folder = tab.playwright.getByText(targetFolder).first();
-    await folder.click();
-    await tab.playwright.waitForTimeout(2000);
-    
-    let addBtn = tab.playwright.getByText("添加视频").first();
-    await addBtn.click();
-    await tab.playwright.waitForTimeout(3000);
-    
-    // Select newly favorited cards using .NWh9vMMV
-    let cards = tab.playwright.locator('ul[data-e2e="scroll-list"] li .NWh9vMMV');
-    let cardCount = await cards.count();
-    let toCheckCount = Math.min(cardCount, itemsToAdd.length);
-    console.log(`[DouyinCollect][Stage 2] Selecting ${{toCheckCount}} cards in modal...`);
-    for (let c = 0; c < toCheckCount; c++) {{
-        await cards.nth(c).click();
-        await tab.playwright.waitForTimeout(80);
-    }}
-    await tab.playwright.waitForTimeout(1000);
-    
-    let okBtn = tab.playwright.locator('.i5w2sw6C button, .modal-pannel button').filter({{ hasText: '确定' }}).first();
-    await okBtn.click();
-    await tab.playwright.waitForTimeout(3000);
-    
-    // Stage 3: Full Folder Readback & Verification
-    console.log(`[DouyinCollect][Stage 3] Full folder readback & reconciliation...`);
-    for (let id of itemsToAdd) {{
-        receipts.push({{
-            id: id,
-            outcome: "ui_confirmed",
-            at: new Date().toISOString(),
-            ui: {{
-                account_id: "{account_id}",
-                folder_id: folderIdStr,
-                id: id,
-                favorite_visible: true,
-                folder_selected_visible: true,
-                reopened_detail: true
-            }}
-        }});
-    }}
-    
-    return {{ success: true, count: receipts.length, receipts }};
-}})();
-"""
-        return js
+        return real_collector.generate_douyin_browser_script("水球泡视频周报", folder_id, to_add)
     elif platform == "bilibili":
         js = f"""// Bilibili automated serial collection runner (API / In-App Browser)
 (async function runBilibiliCollect() {{

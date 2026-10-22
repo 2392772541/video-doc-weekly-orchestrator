@@ -1406,7 +1406,19 @@ class ResolveLinksAndCollectRunnerTests(unittest.TestCase):
         self.assertIn(".o2tLobnl", js)
         self.assertIn("添加视频", js)
         self.assertIn(".NWh9vMMV", js)
+        
         self.assertIn("ui_confirmed", js)
+
+    def test_real_collector_douyin_folder_increment_gate(self):
+        import real_collector
+        items = [{"id": "7697772535182408570", "url": "https://www.douyin.com/video/7697772535182408570"}]
+        script = real_collector.generate_douyin_browser_script("水球泡视频周报", "7423955100025112233", items)
+        self.assertIn("folderCountBefore", script)
+        self.assertIn("folderCountAfter", script)
+        self.assertIn("folderIncrementSuccess", script)
+        self.assertIn("folder_count_before", script)
+        self.assertIn("folder_count_after", script)
+        self.assertIn("水球泡视频周报", script)
 
 
     def test_extract_candidate_urls_from_ocr_lines(self):
