@@ -617,10 +617,13 @@ def generate_chatgpt_search_sheet(unresolved_items: list[dict]) -> dict:
         k = it.get("key", f"item_{idx}")
         t = it.get("title", "")
         author = it.get("author", "未知")
-        sec = it.get("source", {}).get("timestamp_seconds", 0)
+        sec_val = it.get("source", {}).get("timestamp_seconds")
+        if sec_val is None:
+            sec_val = it.get("timestamp_seconds")
+        sec_str = f"{int(sec_val)}s" if (sec_val is not None and isinstance(sec_val, (int, float)) and sec_val >= 30.0) else "待定位"
         orig_u = it.get("url") or it.get("original_url") or ""
         body_snippet = (it.get("body") or "")[:80].replace("\n", " ")
-        prompt_lines.append(f"{idx}. [Key: {k}] 标题：《{t}》 | 作者线索: {author} | 录像时间戳: {int(sec)}s | 原有线索/截断链接: {orig_u}")
+        prompt_lines.append(f"{idx}. [Key: {k}] 标题：《{t}》 | 作者线索: {author} | 录像时间戳: {sec_str} | 原有线索/截断链接: {orig_u}")
         if body_snippet:
             prompt_lines.append(f"   正文关键句: {body_snippet}")
 
@@ -668,6 +671,14 @@ def apply_search_resolutions_to_state(run_dir: Path, state: dict, resolutions: l
 
             # Strictly enforce mutual exclusion: remove screenshot image blocks for newly linked items
             layout = [b for b in layout if not (b.get("type") == "image" and b.get("owner_key") == k)]
+            screen_dir = run_dir / "evidence" / "screenshots"
+            if screen_dir.is_dir():
+                safe_k = re.sub(r"[^\w\-]", "_", k)
+                for sf in screen_dir.glob(f"{safe_k}*"):
+                    try:
+                        sf.unlink()
+                    except Exception:
+                        pass
 
             applied.append({
                 "key": k,

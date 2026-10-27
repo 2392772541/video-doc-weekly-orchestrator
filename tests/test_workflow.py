@@ -2037,6 +2037,65 @@ Hope this helps!'''
             self.assertLess(crop_img.size[0], 1920)
             self.assertLess(crop_img.size[1], 1080)
 
+    def test_zero_second_timestamp_fallback_prevented(self):
+        import resolve_links
+        with tempfile.TemporaryDirectory() as tmpdir:
+            item_0s = {
+                "key": "test-1",
+                "title": "测试条目",
+                "source": {"source_id": "src-video-p1", "timestamp_seconds": 0.0}
+            }
+            # Should return None because timestamp is < 30s
+            res = resolve_links.capture_item_screenshot(Path(tmpdir), item_0s)
+            self.assertIsNone(res)
+
+            # smart_capture_item_screenshot should also reject 0s
+            smart_res = resolve_links.smart_capture_item_screenshot(Path(tmpdir), item_0s)
+            self.assertIsNone(smart_res.get("screenshot"))
+            self.assertEqual(smart_res.get("reason"), "no_valid_timestamp_found")
+
+    def test_mutual_exclusion_removes_screenshots_when_url_present(self):
+        import resolve_links
+        import weekly_core
+        with tempfile.TemporaryDirectory() as tmpdir:
+            item_with_url = {
+                "key": "test-2",
+                "title": "已验证外链条目",
+                "url": "https://www.douyin.com/video/7699699180269401010",
+                "screenshot": "evidence/screenshots/test-2.jpg",
+                "source": {"source_id": "src-video-p1", "timestamp_seconds": 150.0}
+            }
+            # smart_capture should immediately pop screenshot and return None
+            res = resolve_links.smart_capture_item_screenshot(Path(tmpdir), item_with_url)
+            self.assertIsNone(res.get("screenshot"))
+            self.assertEqual(res.get("reason"), "item_already_has_url")
+            self.assertNotIn("screenshot", item_with_url)
+
+            # Test build_report rendering mutual exclusion
+            state = {
+                "issue": {"title": "周报测试"},
+                "items": [
+                    {
+                        "key": "test-2",
+                        "number": 1,
+                        "title": "已验证外链条目",
+                        "kind": "video",
+                        "url": "https://www.douyin.com/video/7699699180269401010",
+                        "canonical_url": "https://www.douyin.com/video/7699699180269401010",
+                        "screenshot": "evidence/screenshots/test-2.jpg",
+                        "exception": {"reason": "原作品未确认"},
+                        "body": ""
+                    }
+                ],
+                "layout": [
+                    {"type": "item", "key": "test-2"}
+                ]
+            }
+            md, xml = weekly_core.build_report(state)
+            self.assertNotIn("【原录像截图核验参考：", md)
+            self.assertNotIn("原作品未确认", md)
+            self.assertIn("https://www.douyin.com/video/7699699180269401010", md)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

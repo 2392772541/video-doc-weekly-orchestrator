@@ -699,6 +699,7 @@ def build_report(state):
             label = (str(it["number"]) + ". " if it["number"] is not None else "") + it["title"]
             item_level = min(current_level + 1, 6)
             h = ET.SubElement(root, "h" + str(item_level))
+            has_url = bool(it.get("canonical_url") or it.get("url"))
             if it["kind"] == "video":
                 h.text = label
                 md.append("#" * item_level + " " + label)
@@ -706,7 +707,7 @@ def build_report(state):
                 bold = ET.SubElement(h, "b")
                 ET.SubElement(bold, "span", {"text-color": "red"}).text = label
                 md.append("#" * item_level + ' <b><span style="color:#d83931">' + html.escape(label) + '</span></b>')
-            if it.get("exception"):
+            if it.get("exception") and not has_url:
                 notice = "原作品未确认，未替代、未收藏：" + it["exception"]["reason"]
                 ET.SubElement(root, "p").text = notice
                 md.append(notice)
@@ -719,11 +720,12 @@ def build_report(state):
                 p_cand.text = "候选链接（待核验）："
                 ET.SubElement(p_cand, "a", href=it["candidate_url"]).text = it["candidate_url"]
                 md.append(cand_notice)
-            if it.get("screenshot") and b["key"] not in image_owner_keys:
+            # Strict mutual exclusion: items with verified URLs must NEVER display screenshot references
+            if not has_url and it.get("screenshot") and b["key"] not in image_owner_keys:
                 p_shot = ET.SubElement(root, "p")
                 p_shot.text = "【原录像截图核验参考：" + it["screenshot"] + "】"
                 md.append("【原录像截图核验参考：" + it["screenshot"] + "】")
-            if it["canonical_url"] and not it.get("exception"):
+            if it.get("canonical_url") and (not it.get("exception") or has_url):
                 p = ET.SubElement(root, "p")
                 ET.SubElement(p, "a", href=it["canonical_url"]).text = it["canonical_url"]
                 md.append(it["canonical_url"])

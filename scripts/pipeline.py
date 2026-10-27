@@ -61,7 +61,9 @@ def run_pipeline(run_dir: Path | str, manifest_path: Path | str, mode: str = "fu
     for it in seed_data.get("items", []):
         k = it["key"]
         sid = it.get("source_id", "src-video-p1")
-        sec = it.get("timestamp_seconds", 0)
+        sec = it.get("timestamp_seconds")
+        if sec is None:
+            sec = it.get("source", {}).get("timestamp_seconds")
         url = it.get("url") or it.get("canonical_url", "")
         kind = it.get("kind", "video")
         title = it["title"]
@@ -134,27 +136,36 @@ def run_pipeline(run_dir: Path | str, manifest_path: Path | str, mode: str = "fu
                 "evidence_files": [f"evidence/ver_{k}.json"]
             })
         else:
-            # Plain text entry without external link -> extract timestamp frame
+            # Plain text entry without external link -> extract timestamp frame ONLY if verified timestamp >= 30.0s
             sc_img = screenshots_dir / f"{k}.jpg"
-            if not sc_img.exists() and sid in sources_dict and Path(ffmpeg).exists():
-                v_path = sources_dict[sid]["path"]
-                cmd = [
-                    ffmpeg, "-ss", str(sec), "-i", v_path,
-                    "-vframes", "1", "-q:v", "2", "-threads", "1",
-                    str(sc_img), "-y"
-                ]
+            valid_sec = sec is not None and isinstance(sec, (int, float)) and sec >= 30.0
+            if valid_sec and sid in sources_dict and Path(ffmpeg).exists():
+                if not sc_img.exists():
+                    v_path = sources_dict[sid]["path"]
+                    cmd = [
+                        ffmpeg, "-ss", str(sec), "-i", v_path,
+                        "-vframes", "1", "-q:v", "2", "-threads", "1",
+                        str(sc_img), "-y"
+                    ]
+                    try:
+                        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    except Exception:
+                        pass
+            elif sc_img.exists():
+                # Delete any stale or 0s frame for items that have no valid timestamp or have links
                 try:
-                    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    sc_img.unlink()
                 except Exception:
                     pass
 
+            has_real_img = sc_img.exists() and valid_sec
             exc_ev = evidence_dir / f"exc_{k}.json"
             exc_ev.write_text(json.dumps({
                 "key": k,
                 "title": title,
-                "reason": "口播与随笔感悟，无独立外部视频链接，提供录像对应时间戳截图作为读者对照依据",
-                "screenshot": str(sc_img.relative_to(run_path)) if sc_img.exists() else "",
-                "timestamp_seconds": sec
+                "reason": "口播与随笔感悟，无独立外部视频链接，提供录像对应时间戳截图作为读者对照依据" if has_real_img else "口播与随笔感悟，纯文本展示，不盲目填充0秒封面图",
+                "screenshot": str(sc_img.relative_to(run_path)) if has_real_img else "",
+                "timestamp_seconds": sec if valid_sec else None
             }, ensure_ascii=False, indent=2), encoding="utf-8")
 
             events.append({
