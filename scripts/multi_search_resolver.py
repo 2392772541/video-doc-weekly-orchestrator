@@ -176,7 +176,7 @@ def evaluate_candidate_match(item_title: str, item_author: str, candidate_title:
         if clean_cand_auth and len(clean_cand_auth) >= 2 and clean_cand_auth in b_tokens:
             body_bonus = True
             author_bonus = True
-        if clean_cand and any(clean_cand[i:i+6] in b_tokens for i in range(len(clean_cand) - 5)):
+        if c_cand and any(c_cand[i:i+6] in b_tokens for i in range(len(c_cand) - 5)):
             body_bonus = True
 
     if has_core_token and (ratio >= 0.4 or body_bonus):

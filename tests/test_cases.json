@@ -1,0 +1,123 @@
+{
+  "skill_name": "video-doc-weekly-orchestrator",
+  "generated_cases_count": 13,
+  "cases": [
+    {
+      "id": "POS-001",
+      "category": "positive",
+      "prompt": "请帮我针对这个项目执行一次深度的 全流程自，排查其中的潜在问题。",
+      "expected_trigger": true,
+      "rationale": "核心功能正例：涉及 全流程自",
+      "verified_status": "unverified"
+    },
+    {
+      "id": "POS-002",
+      "category": "positive",
+      "prompt": "我刚做完修改，需要自动完成 动化制作 并给出优化建议。",
+      "expected_trigger": true,
+      "rationale": "工作流正例：调用 动化制作",
+      "verified_status": "unverified"
+    },
+    {
+      "id": "POS-003",
+      "category": "positive",
+      "prompt": "检查当前目录下的相关配置与资源，确保符合最新的 全流程自 标准。",
+      "expected_trigger": true,
+      "rationale": "标准检查正例：验证与合规",
+      "verified_status": "unverified"
+    },
+    {
+      "id": "POS-004",
+      "category": "positive",
+      "prompt": "帮我梳理并执行 且曼，处理所有的边界和异常情况。",
+      "expected_trigger": true,
+      "rationale": "端到端执行正例：完整流程",
+      "verified_status": "unverified"
+    },
+    {
+      "id": "POS-005",
+      "category": "positive",
+      "prompt": "按照最佳工程实践，审核并优化我们现有的 全流程自 方案。",
+      "expected_trigger": true,
+      "rationale": "工程优化正例：方案与质量提升",
+      "verified_status": "unverified"
+    },
+    {
+      "id": "NEG-001",
+      "category": "negative",
+      "prompt": "帮我写一个快速排序算法的 Python 实现并测试性能。",
+      "expected_trigger": false,
+      "rationale": "纯算法编程任务，应由标准编程或代码能力处理",
+      "verified_status": "unverified"
+    },
+    {
+      "id": "NEG-002",
+      "category": "negative",
+      "prompt": "把这段中文产品介绍翻译成地道的英文商务邮件。",
+      "expected_trigger": false,
+      "rationale": "语言翻译与文案任务，与本技能领域无关",
+      "verified_status": "unverified"
+    },
+    {
+      "id": "NEG-003",
+      "category": "negative",
+      "prompt": "分析一下当前系统的内存占用，看看哪个进程占了最高 CPU。",
+      "expected_trigger": false,
+      "rationale": "系统运维与性能分析任务，不应触发该领域技能",
+      "verified_status": "unverified"
+    },
+    {
+      "id": "NEG-004",
+      "category": "negative",
+      "prompt": "帮我画一张赛博朋克风格的猫咪头像，要有霓虹灯光效。",
+      "expected_trigger": false,
+      "rationale": "绘图/生图任务，应由 imagegen 处理",
+      "verified_status": "unverified"
+    },
+    {
+      "id": "NEG-005",
+      "category": "negative",
+      "prompt": "请帮我修改网页的 CSS 样式，让导航栏在滚动时悬浮固定。",
+      "expected_trigger": false,
+      "rationale": "前端样式微调任务，不应误调用本技能",
+      "verified_status": "unverified"
+    },
+    {
+      "id": "BND-001",
+      "category": "boundary",
+      "prompt": "这个文件里提到了 全流程自，但只是纯文本笔记，不需要做任何实质处理。",
+      "expected_trigger": false,
+      "rationale": "仅包含关键词但无执行诉求的边界用例",
+      "verified_status": "unverified"
+    },
+    {
+      "id": "BND-002",
+      "category": "boundary",
+      "prompt": "我想了解一下行业里目前有哪些工具支持 全流程自 的最新规范？",
+      "expected_trigger": false,
+      "rationale": "泛行业调研咨询，应优先普通回答而非立即执行复杂动作",
+      "verified_status": "unverified"
+    },
+    {
+      "id": "BND-003",
+      "category": "boundary",
+      "prompt": "检查这行代码有没有语法错误：print('hello world')",
+      "expected_trigger": false,
+      "rationale": "极简代码查看，不应过度触发重型专项技能流程",
+      "verified_status": "unverified"
+    }
+  ],
+  "verification_matrix": {
+    "skill_name": "video-doc-weekly-orchestrator",
+    "level_a_format": "PASS",
+    "level_b_discovery": "PASS",
+    "level_c_explicit": "PASS",
+    "level_d_nl_trigger": "EVALUATED_PASS",
+    "level_e_e2e_exec": "UNVERIFIED",
+    "notes": {
+      "level_a": "0 critical, 0 warnings",
+      "level_d": "Trigger score: 100/100",
+      "level_e": "Pending interactive/end-to-end task run"
+    }
+  }
+}
