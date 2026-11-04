@@ -430,7 +430,24 @@ def run_pipeline(run_dir: Path | str, manifest_path: Path | str, mode: str = "fu
     if target_doc_id:
         try:
             import sync_feishu_sidebar
-            sidebar_sync_result = sync_feishu_sidebar.sync_document_sidebar(target_doc_id, temp_dir=evidence_dir)
+            # Dynamically derive subsections and their anchor items from items list
+            dynamic_subs = []
+            seen_subs = set()
+            for it in state.get("items", []):
+                sub = it.get("subsection")
+                sec = it.get("section", "")
+                if sub and sub not in seen_subs and any(k in sec for k in ["游戏人生", "自媒体与搞钱", "AI视野", "AI优秀文章"]):
+                    seen_subs.add(sub)
+                    # Extract anchor keyword from the title of the first item in this subsection
+                    clean_kw = re.sub(r"^\d+[\.、\s]+", "", it.get("title", "")).strip()[:14]
+                    if clean_kw:
+                        dynamic_subs.append((sub, clean_kw))
+
+            sidebar_sync_result = sync_feishu_sidebar.sync_document_sidebar(
+                target_doc_id,
+                subsections_config=dynamic_subs or None,
+                temp_dir=evidence_dir
+            )
             (evidence_dir / "feishu_sidebar_sync.json").write_text(
                 json.dumps(sidebar_sync_result, ensure_ascii=False, indent=2), encoding="utf-8"
             )

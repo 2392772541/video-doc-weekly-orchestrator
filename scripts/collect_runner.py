@@ -29,42 +29,8 @@ def generate_browser_script(run_dir: Path, platform: str, plan_data: dict) -> st
     if platform == "douyin":
         return real_collector.generate_douyin_browser_script("水球泡视频周报", folder_id, to_add)
     elif platform == "bilibili":
-        js = f"""// Bilibili automated serial collection runner (API / In-App Browser)
-(async function runBilibiliCollect() {{
-    const targetFolder = "水球泡周报视频";
-    const fid = "{folder_id}";
-    const itemsToAdd = {json.dumps(to_add)};
-    const planId = "{plan_id}";
-    
-    console.log(`[BilibiliCollect] Starting collection for ${{itemsToAdd.length}} items to folder ${{targetFolder}}`);
-    const receipts = [];
-    
-    for (let i = 0; i < itemsToAdd.length; i++) {{
-        const bvid = itemsToAdd[i];
-        console.log(`[BilibiliCollect] Processing [${{i + 1}}/${{itemsToAdd.length}}] BVID: ${{bvid}}`);
-        
-        if (i > 0) {{
-            await new Promise(r => setTimeout(r, 5500));
-        }}
-        
-        receipts.push({{
-            id: bvid,
-            outcome: "ui_confirmed",
-            at: new Date().toISOString(),
-            ui: {{
-                account_id: "{account_id}",
-                folder_id: fid,
-                id: bvid,
-                favorite_visible: true,
-                folder_selected_visible: true,
-                reopened_detail: true
-            }}
-        }});
-    }}
-    return {{ success: true, count: receipts.length, receipts }};
-}})();
-"""
-        return js
+        target_folder = plan_data.get("folder_name", "水球泡周报视频") or "水球泡周报视频"
+        return real_collector.generate_bilibili_browser_script(target_folder, folder_id, to_add)
     return ""
 def main():
     parser = argparse.ArgumentParser(description=__doc__)

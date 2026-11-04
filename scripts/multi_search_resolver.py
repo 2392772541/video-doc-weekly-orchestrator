@@ -644,6 +644,13 @@ def apply_search_resolutions_to_state(run_dir: Path, state: dict, resolutions: l
     items = state.get("items", [])
     layout = state.get("layout", [])
 
+    # Global URL uniqueness tracking to prevent duplicate link assignments
+    assigned_urls = set()
+    for it in items:
+        existing_u = it.get("canonical_url") or it.get("url")
+        if existing_u:
+            assigned_urls.add(existing_u)
+
     res_map = {r.get("key"): r for r in resolutions if r.get("key")}
     title_map = {r.get("title"): r for r in resolutions if r.get("title")}
 
@@ -660,6 +667,18 @@ def apply_search_resolutions_to_state(run_dir: Path, state: dict, resolutions: l
 
         ver = resolve_links.verify_resolution(it, cand_url, cand_title, cand_author)
         if ver["verified"]:
+            resolved_u = ver["resolved_url"]
+            # Strict 1-to-1 uniqueness check: reject if another item already holds this URL
+            if resolved_u in assigned_urls and (it.get("canonical_url") != resolved_u and it.get("url") != resolved_u):
+                rejected.append({
+                    "key": k,
+                    "title": t,
+                    "attempted_url": resolved_u,
+                    "reason": "duplicate_url_already_assigned_to_another_item"
+                })
+                continue
+
+            assigned_urls.add(resolved_u)
             it["canonical_url"] = ver["resolved_url"]
             it["url"] = ver["resolved_url"]
             it["kind"] = "video" if ver["platform"] in ("douyin", "bilibili") else "link"

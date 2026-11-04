@@ -2096,6 +2096,44 @@ Hope this helps!'''
             self.assertNotIn("原作品未确认", md)
             self.assertIn("https://www.douyin.com/video/7699699180269401010", md)
 
+    def test_search_resolution_duplicate_url_rejection(self):
+        """Validates that apply_search_resolutions_to_state strictly rejects assigning
+        the exact same URL to two different items, preventing duplicate video cards.
+        """
+        import multi_search_resolver
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state = {
+                "items": [
+                    {"key": "item-1", "title": "视频一", "kind": "video", "canonical_url": "https://www.douyin.com/video/7699060466600938792"},
+                    {"key": "item-2", "title": "视频二", "kind": "video", "exception": {"reason": "未确认"}}
+                ],
+                "layout": []
+            }
+            resolutions = [
+                {"key": "item-2", "title": "视频二", "url": "https://www.douyin.com/video/7699060466600938792"}
+            ]
+            res = multi_search_resolver.apply_search_resolutions_to_state(Path(tmpdir), state, resolutions)
+            self.assertEqual(len(res["applied"]), 0)
+            self.assertEqual(len(res["rejected"]), 1)
+            self.assertEqual(res["rejected"][0]["reason"], "duplicate_url_already_assigned_to_another_item")
+
+    def test_bilibili_browser_script_uses_real_api(self):
+        """Validates that collect_runner generates an authentic Bilibili script with in-page API deal
+        rather than a dummy mock receipt push.
+        """
+        import collect_runner
+        plan = {
+            "plan_id": "plan_test",
+            "folder_id": "4103329683",
+            "folder_name": "水球泡周报视频",
+            "account_id": "test_user",
+            "missing_ids": ["BV1vfHF6EESs"]
+        }
+        js = collect_runner.generate_browser_script(Path("."), "bilibili", plan)
+        self.assertIn("https://api.bilibili.com/x/v3/fav/resource/deal", js)
+        self.assertIn("bili_jct", js)
+        self.assertIn("runBilibiliRealCollection", js)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
