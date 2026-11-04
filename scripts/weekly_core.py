@@ -200,7 +200,9 @@ def initialize(seed, mode="full"):
     require(mode in {"collect", "audit"} or seed.get("scope") != "collection_inventory_only_not_full_report", "video_only_inventory_cannot_publish_full_report")
     items = []
     for n, src in enumerate(seed["items"], 1):
-        raw = src.get("original_url", src.get("url", ""))
+        raw = src.get("original_url") if src.get("original_url") is not None else src.get("url", "")
+        if raw is None:
+            raw = ""
         require(isinstance(raw, str), "original_url_must_be_string")
         try:
             link = normalize_url(raw)
