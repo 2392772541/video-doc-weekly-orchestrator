@@ -235,7 +235,22 @@ def run_pipeline(run_dir: Path | str, manifest_path: Path | str, mode: str = "fu
     # Apply all events
     state = w.apply_events(state, run_path, events)
 
-    # 3. Screenshot OCR Auto-Heal (Line printed on recording)
+    # 3. Progressive 3-Pass Video Frame Extraction & Link Recovery (Coarse -> Dense Gap -> Tail Sweep)
+    video_sources = {
+        s["source_id"]: s["path"]
+        for s in seed_data.get("sources", [])
+        if Path(s.get("path", "")).is_file()
+    }
+    multi_extract_summary = None
+    if video_sources:
+        try:
+            multi_extract_summary = multi_search_resolver.run_three_pass_video_extraction(
+                video_sources, state, run_path, coarse_step=12.0, dense_step=1.0, tail_step=2.0
+            )
+        except Exception as ex:
+            multi_extract_summary = {"error": str(ex)}
+
+    # Fallback to screenshot OCR auto-heal for any remaining candidate files
     heal_res = resolve_links.auto_heal_from_screenshots(run_path, state)
 
     # 4. Multi-Channel Search Recovery (Bilibili API search & ChatGPT prompt export)
@@ -482,6 +497,7 @@ def run_pipeline(run_dir: Path | str, manifest_path: Path | str, mode: str = "fu
         "items_count": len(state["items"]),
         "rendered": render_res,
         "auto_healed": heal_res,
+        "three_pass_extraction": multi_extract_summary,
         "search_healed": search_healed,
         "remaining_unresolved": len(rem_unresolved),
         "chatgpt_prompt_file": str(evidence_dir / "chatgpt_search_prompt.txt"),

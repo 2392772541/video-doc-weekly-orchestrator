@@ -2134,6 +2134,55 @@ Hope this helps!'''
         self.assertIn("bili_jct", js)
         self.assertIn("runBilibiliRealCollection", js)
 
+    def test_three_pass_video_extraction_flow(self):
+        """Validates that run_three_pass_video_extraction executes Pass 1 -> Pass 2 -> Pass 3 in sequence,
+        auto-healing newly uncovered candidates at each pass and persisting three_pass_extraction_summary.json.
+        """
+        import multi_search_resolver
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_p = Path(tmpdir)
+            state = {
+                "items": [
+                    {"key": "it-1", "title": "第一项", "kind": "video", "number": 1, "exception": {"reason": "未确认"}},
+                    {"key": "it-2", "title": "第二项", "kind": "video", "number": 2, "exception": {"reason": "未确认"}},
+                    {"key": "it-3", "title": "第三项", "kind": "video", "number": 3, "exception": {"reason": "未确认"}}
+                ],
+                "layout": []
+            }
+
+            # Pass 1 finds candidate for it-1
+            cand1 = [{"url": "https://www.douyin.com/video/7699060466600938792", "id": "7699060466600938792", "platform": "douyin", "raw": "1. 第一项", "ocr_lines": ["1. 第一项"]}]
+            # Pass 2 (dense gap) finds candidate for it-2
+            cand2 = [{"url": "https://www.douyin.com/video/7701199334364204351", "id": "7701199334364204351", "platform": "douyin", "raw": "2. 第二项", "ocr_lines": ["2. 第二项"]}]
+            # Pass 3 (tail sweep) finds candidate for it-3
+            cand3 = [{"url": "https://www.douyin.com/video/7700912487595560218", "id": "7700912487595560218", "platform": "douyin", "raw": "3. 第三项", "ocr_lines": ["3. 第三项"]}]
+
+            fake_video = tmp_p / "fake_video.mp4"
+            fake_video.write_bytes(b"\x00" * 1024)
+
+            with patch("multi_search_resolver.scan_video_timeline_for_links", return_value=cand1), \
+                 patch("multi_search_resolver.targeted_dense_gap_scan", return_value=cand2), \
+                 patch("multi_search_resolver.tail_section_dense_scan", return_value=cand3):
+
+                summary = multi_search_resolver.run_three_pass_video_extraction(
+                    {"src-p1": fake_video}, state, tmp_p
+                )
+
+                self.assertEqual(summary["pass1_coarse"]["items_healed"], 1)
+                self.assertEqual(summary["pass2_dense_gap"]["items_healed"], 1)
+                self.assertEqual(summary["pass3_tail_sweep"]["items_healed"], 1)
+                self.assertEqual(summary["total_healed"], 3)
+                self.assertEqual(summary["unresolved_remaining"], 0)
+                self.assertTrue((tmp_p / "evidence" / "three_pass_extraction_summary.json").is_file())
+                self.assertTrue((tmp_p / "frame_urls.json").is_file())
+
+                # Check state updated
+                self.assertEqual(state["items"][0]["canonical_url"], "https://www.douyin.com/video/7699060466600938792")
+                self.assertEqual(state["items"][1]["canonical_url"], "https://www.douyin.com/video/7701199334364204351")
+                self.assertEqual(state["items"][2]["canonical_url"], "https://www.douyin.com/video/7700912487595560218")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

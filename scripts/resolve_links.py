@@ -508,10 +508,13 @@ def verify_candidate_for_item(item: dict, candidate: dict, existing_ids: set) ->
     item_title = item.get("title", "")
     clean_item_title = re.sub(r"^\d+[\.、\s]", "", item_title).strip()
     clean_item_title_core = re.sub(r"[^\w\u4e00-\u9fff]", "", clean_item_title)
-    raw = candidate.get("raw", "")
+    raw_components = [candidate.get("raw", "")]
+    if candidate.get("ocr_lines"):
+        raw_components.extend(candidate["ocr_lines"])
+    raw = " ".join(raw_components)
     clean_raw = re.sub(r"[^\w\u4e00-\u9fff]", "", raw)
-    if clean_item_title_core and len(clean_item_title_core) >= 4:
-        if clean_item_title_core in clean_raw or clean_raw in clean_item_title_core:
+    if clean_item_title_core and len(clean_item_title_core) >= 2:
+        if clean_item_title_core in clean_raw or (len(clean_item_title_core) >= 4 and clean_raw in clean_item_title_core):
             return {
                 "matched": True,
                 "method": "screenshot_ocr_title_match",
@@ -521,6 +524,23 @@ def verify_candidate_for_item(item: dict, candidate: dict, existing_ids: set) ->
                 "confidence": 0.9,
                 "reason": f"Screenshot OCR URL near matching title: {clean_item_title}"
             }
+        # Number prefix + core token overlap
+        num_val = item.get("number")
+        if num_val is not None:
+            num_pattern = re.compile(r"(?:^|\s)" + re.escape(str(num_val)) + r"[\.、\s]")
+            if num_pattern.search(raw):
+                overlap = sum(1 for ch in set(clean_item_title_core) if ch in clean_raw)
+                min_needed = 2 if len(clean_item_title_core) <= 3 else min(4, len(clean_item_title_core))
+                if overlap >= min_needed:
+                    return {
+                        "matched": True,
+                        "method": "frame_ocr_number_and_keywords_match",
+                        "resolved_url": candidate["url"],
+                        "platform": plat,
+                        "id": cid,
+                        "confidence": 0.95,
+                        "reason": f"Frame OCR number {num_val} and keywords matched: {clean_item_title[:15]}"
+                    }
 
     return {"matched": False, "reason": "no_prefix_or_title_match"}
 

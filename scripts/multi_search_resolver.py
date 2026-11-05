@@ -298,9 +298,50 @@ def scan_neighboring_video_frames(video_path: str | Path, timestamp_sec: float, 
     return discovered
 
 
-def scan_video_timeline_for_links(video_path: str | Path, start_sec: float = 0, end_sec: float | None = None, step_sec: float = 15.0, max_frames: int = 150) -> list[dict]:
-    """Scans video timeline with ffmpeg (single-thread memory-safe) and RapidOCR
-    to discover all on-screen URLs, truncated IDs, BVIDs, and slide titles.
+def get_video_duration(video_path: str | Path) -> float | None:
+    """Gets exact video duration in seconds via ffprobe or ffmpeg."""
+    v_p = Path(video_path).resolve()
+    if not v_p.is_file():
+        return None
+    ffprobe = "C:/Users/win10/scoop/shims/ffprobe.EXE"
+    if not Path(ffprobe).is_file():
+        ffprobe = "ffprobe"
+    try:
+        cmd = [
+            ffprobe, "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            str(v_p)
+        ]
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        if res.returncode == 0 and res.stdout.strip():
+            return float(res.stdout.strip())
+    except Exception:
+        pass
+    try:
+        ffmpeg = "C:/Users/win10/scoop/shims/ffmpeg.EXE"
+        if not Path(ffmpeg).is_file():
+            ffmpeg = "ffmpeg"
+        cmd = [ffmpeg, "-i", str(v_p)]
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        m = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", res.stderr)
+        if m:
+            h, m_min, s = float(m.group(1)), float(m.group(2)), float(m.group(3))
+            return h * 3600 + m_min * 60 + s
+    except Exception:
+        pass
+    return None
+
+
+def scan_video_timeline_for_links(
+    video_path: str | Path,
+    start_sec: float = 0,
+    end_sec: float | None = None,
+    step_sec: float = 12.0,
+    max_frames: int | None = None
+) -> list[dict]:
+    """Pass 1: Scans video timeline with single-thread memory-safe ffmpeg and RapidOCR
+    to discover all on-screen URLs, truncated IDs, BVIDs, and slide titles across 100% duration.
     """
     v_path = Path(video_path).resolve()
     if not v_path.is_file():
@@ -313,6 +354,9 @@ def scan_video_timeline_for_links(video_path: str | Path, start_sec: float = 0, 
     if not Path(ffmpeg).is_file():
         ffmpeg = "ffmpeg"
 
+    if end_sec is None:
+        end_sec = get_video_duration(v_path)
+
     discovered = []
     seen_urls = set()
 
@@ -324,7 +368,7 @@ def scan_video_timeline_for_links(video_path: str | Path, start_sec: float = 0, 
         while True:
             if end_sec is not None and curr_sec > end_sec:
                 break
-            if frame_count >= max_frames:
+            if max_frames is not None and frame_count >= max_frames:
                 break
 
             frame_file = tmp_p / f"frame_{int(curr_sec)}s.jpg"
@@ -349,6 +393,7 @@ def scan_video_timeline_for_links(video_path: str | Path, start_sec: float = 0, 
                                 seen_urls.add(c["url"])
                                 c["timestamp_seconds"] = curr_sec
                                 c["ocr_lines"] = lines[:8]
+                                c["source_pass"] = "pass1_coarse"
                                 discovered.append(c)
                     try:
                         frame_file.unlink()
@@ -363,6 +408,322 @@ def scan_video_timeline_for_links(video_path: str | Path, start_sec: float = 0, 
             frame_count += 1
 
     return discovered
+
+
+def targeted_dense_gap_scan(
+    video_path: str | Path,
+    unresolved_items: list[dict],
+    all_items: list[dict] | None = None,
+    window_sec: float = 60.0,
+    dense_step: float = 1.0
+) -> list[dict]:
+    """Pass 2: Targeted dense frame extraction (1.0s step / 1 fps) focused strictly around
+    unresolved items, unconfirmed exceptions, or numbering sequence gaps.
+    """
+    v_path = Path(video_path).resolve()
+    if not v_path.is_file() or not unresolved_items:
+        return []
+    ocr = resolve_links.get_ocr_engine()
+    if not ocr:
+        return []
+
+    ffmpeg = "C:/Users/win10/scoop/shims/ffmpeg.EXE"
+    if not Path(ffmpeg).is_file():
+        ffmpeg = "ffmpeg"
+
+    duration = get_video_duration(v_path) or 7200.0
+    intervals = []
+    all_list = all_items or unresolved_items
+    key_to_idx = {it.get("key"): idx for idx, it in enumerate(all_list)}
+
+    for it in unresolved_items:
+        ts = it.get("timestamp_seconds")
+        if ts is None and it.get("source"):
+            ts = it["source"].get("timestamp_seconds")
+
+        if ts is not None and isinstance(ts, (int, float)) and ts > 0:
+            intervals.append((max(0.0, float(ts) - window_sec), min(duration, float(ts) + window_sec)))
+        else:
+            k = it.get("key")
+            idx = key_to_idx.get(k)
+            prev_ts = None
+            next_ts = None
+            if idx is not None:
+                for p in range(idx - 1, -1, -1):
+                    pts = all_list[p].get("timestamp_seconds") or (all_list[p].get("source") or {}).get("timestamp_seconds")
+                    if pts and isinstance(pts, (int, float)) and pts > 0:
+                        prev_ts = float(pts)
+                        break
+                for n in range(idx + 1, len(all_list)):
+                    nts = all_list[n].get("timestamp_seconds") or (all_list[n].get("source") or {}).get("timestamp_seconds")
+                    if nts and isinstance(nts, (int, float)) and nts > 0:
+                        next_ts = float(nts)
+                        break
+
+            if prev_ts is not None and next_ts is not None:
+                intervals.append((max(0.0, prev_ts - 5.0), min(duration, next_ts + 10.0)))
+            elif prev_ts is not None:
+                intervals.append((max(0.0, prev_ts - 5.0), min(duration, prev_ts + 90.0)))
+            elif next_ts is not None:
+                intervals.append((max(0.0, next_ts - 90.0), min(duration, next_ts + 5.0)))
+
+    if not intervals:
+        return []
+
+    # Merge overlapping or close intervals (within 10s)
+    intervals.sort(key=lambda x: x[0])
+    merged = []
+    curr_start, curr_end = intervals[0]
+    for s, e in intervals[1:]:
+        if s <= curr_end + 10.0:
+            curr_end = max(curr_end, e)
+        else:
+            merged.append((curr_start, curr_end))
+            curr_start, curr_end = s, e
+    merged.append((curr_start, curr_end))
+
+    discovered = []
+    seen_urls = set()
+
+    with tempfile.TemporaryDirectory(prefix="weekly_dense_gap_") as tmpdir:
+        tmp_p = Path(tmpdir)
+        frame_idx = 0
+        for w_start, w_end in merged:
+            c_sec = w_start
+            while c_sec <= w_end:
+                frame_idx += 1
+                frame_file = tmp_p / f"dense_{frame_idx}_{int(c_sec)}s.jpg"
+                cmd = [
+                    ffmpeg, "-y",
+                    "-ss", f"{c_sec:.2f}",
+                    "-i", str(v_path),
+                    "-frames:v", "1",
+                    "-q:v", "2",
+                    "-threads", "1",
+                    str(frame_file)
+                ]
+                try:
+                    proc = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
+                    if proc.returncode == 0 and frame_file.is_file():
+                        res, _ = ocr(str(frame_file))
+                        if res:
+                            lines = [x[1] for x in res if len(x) >= 2 and isinstance(x[1], str) and x[1].strip()]
+                            cands = resolve_links.extract_candidate_urls_from_ocr_lines(lines)
+                            for c in cands:
+                                if c["url"] not in seen_urls:
+                                    seen_urls.add(c["url"])
+                                    c["timestamp_seconds"] = c_sec
+                                    c["ocr_lines"] = lines[:8]
+                                    c["source_pass"] = "pass2_dense_gap"
+                                    discovered.append(c)
+                        try:
+                            frame_file.unlink()
+                        except Exception:
+                            pass
+                    else:
+                        break
+                except Exception:
+                    break
+                c_sec += dense_step
+
+    return discovered
+
+
+def tail_section_dense_scan(
+    video_path: str | Path,
+    tail_ratio: float = 0.20,
+    dense_step: float = 2.0,
+    min_start_sec: float | None = None
+) -> list[dict]:
+    """Pass 3: Dense sweep over final 15-20% of video duration where product design,
+    tools & technology, and briefing sections are frequently flipped through quickly.
+    """
+    v_path = Path(video_path).resolve()
+    if not v_path.is_file():
+        return []
+    duration = get_video_duration(v_path)
+    if not duration or duration < 60.0:
+        return []
+
+    start_sec = min_start_sec if min_start_sec is not None else max(0.0, duration * (1.0 - tail_ratio))
+    cands = scan_video_timeline_for_links(
+        v_path,
+        start_sec=start_sec,
+        end_sec=duration,
+        step_sec=dense_step,
+        max_frames=None
+    )
+    for c in cands:
+        c["source_pass"] = "pass3_tail_sweep"
+    return cands
+
+
+def _auto_heal_state_with_candidates(run_dir: Path, state: dict, candidates: list[dict], method_tag: str) -> list[dict]:
+    """Helper to safely apply verified candidate URLs to unresolved state items with 1:1 uniqueness check."""
+    if not candidates:
+        return []
+    items = state.get("items", [])
+    layout = state.get("layout", [])
+    run_dir = Path(run_dir).resolve()
+    screen_dir = run_dir / "evidence" / "screenshots"
+
+    assigned_ids = {it.get("id") for it in items if it.get("id") and not it.get("exception")}
+    assigned_urls = {it.get("canonical_url") or it.get("url") for it in items if (it.get("canonical_url") or it.get("url")) and not it.get("exception")}
+
+    healed = []
+    for it in items:
+        needs_healing = bool(it.get("exception")) or not bool(it.get("canonical_url"))
+        if not needs_healing:
+            continue
+
+        for cand in candidates:
+            curl = cand.get("url", "")
+            cid = cand.get("id", "")
+            if curl in assigned_urls or cid in assigned_ids:
+                continue
+
+            ver = resolve_links.verify_candidate_for_item(it, cand, assigned_ids)
+            if ver.get("matched"):
+                assigned_ids.add(ver["id"])
+                assigned_urls.add(ver["resolved_url"])
+
+                it["canonical_url"] = ver["resolved_url"]
+                it["url"] = ver["resolved_url"]
+                it["id"] = ver["id"]
+                it["platform"] = ver["platform"]
+                it["kind"] = "video" if ver["platform"] in ("douyin", "bilibili") else "link"
+                it["resolved_by"] = f"{method_tag}:{ver.get('method', 'ocr_matched')}"
+                it.pop("exception", None)
+                it.pop("screenshot", None)
+                it.pop("candidates", None)
+                it.pop("candidate_url", None)
+
+                # Strict mutual exclusion: remove screenshot image blocks from layout for newly linked items
+                k = it.get("key")
+                layout = [b for b in layout if not (b.get("type") == "image" and b.get("owner_key") == k)]
+                if screen_dir.is_dir() and k:
+                    safe_k = re.sub(r"[^\w\-]", "_", k)
+                    for sf in screen_dir.glob(f"{safe_k}*"):
+                        try:
+                            sf.unlink()
+                        except Exception:
+                            pass
+
+                healed.append({
+                    "key": k,
+                    "title": it.get("title"),
+                    "resolved_url": ver["resolved_url"],
+                    "platform": ver["platform"],
+                    "method": it["resolved_by"]
+                })
+                break
+
+    state["layout"] = layout
+    return healed
+
+
+def run_three_pass_video_extraction(
+    video_sources: dict[str, str | Path],
+    state: dict,
+    run_dir: Path | str,
+    coarse_step: float = 12.0,
+    dense_step: float = 1.0,
+    tail_step: float = 2.0
+) -> dict:
+    """Executes the full 3-Pass Progressive Multi-Stage Frame Extraction:
+    Pass 1: Global Baseline Timeline & TOC Coarse Pass (10-15s step across 100% duration)
+    Pass 2: Targeted Dense Gap & Unresolved Pass (1.0s step around unresolved/broken items)
+    Pass 3: Tail Section Sweep & High-Speed Zone Pass (2.0s step over final 20% duration)
+    Strictly observes single-thread memory safety and immediate frame unlinking.
+    """
+    run_p = Path(run_dir).resolve()
+    evidence_dir = run_p / "evidence"
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+
+    all_candidates = []
+    seen_cands = set()
+
+    # 1. Pass 1: Global Baseline Timeline Pass across all registered videos
+    pass1_candidates = []
+    for sid, v_raw in video_sources.items():
+        vp = Path(v_raw).resolve()
+        if vp.is_file():
+            cands = scan_video_timeline_for_links(vp, step_sec=coarse_step, max_frames=None)
+            for c in cands:
+                if c["url"] not in seen_cands:
+                    seen_cands.add(c["url"])
+                    c["source_id"] = sid
+                    c["source_pass"] = "pass1_coarse"
+                    pass1_candidates.append(c)
+                    all_candidates.append(c)
+
+    pass1_healed = _auto_heal_state_with_candidates(run_p, state, pass1_candidates, "pass1_coarse")
+
+    # 2. Pass 2: Targeted Dense Gap & Unresolved Pass (Immediately executed if items remain unresolved)
+    unresolved_after_p1 = [it for it in state.get("items", []) if it.get("exception") or not it.get("canonical_url")]
+    pass2_candidates = []
+    pass2_healed = []
+    if unresolved_after_p1:
+        for sid, v_raw in video_sources.items():
+            vp = Path(v_raw).resolve()
+            if vp.is_file():
+                gap_cands = targeted_dense_gap_scan(vp, unresolved_after_p1, all_items=state.get("items", []), dense_step=dense_step)
+                for c in gap_cands:
+                    if c["url"] not in seen_cands:
+                        seen_cands.add(c["url"])
+                        c["source_id"] = sid
+                        pass2_candidates.append(c)
+                        all_candidates.append(c)
+
+        pass2_healed = _auto_heal_state_with_candidates(run_p, state, pass2_candidates, "pass2_dense_gap")
+
+    # 3. Pass 3: Tail Section Sweep & High-Speed Zone Pass
+    pass3_candidates = []
+    pass3_healed = []
+    for sid, v_raw in video_sources.items():
+        vp = Path(v_raw).resolve()
+        if vp.is_file():
+            tail_cands = tail_section_dense_scan(vp, tail_ratio=0.20, dense_step=tail_step)
+            for c in tail_cands:
+                if c["url"] not in seen_cands:
+                    seen_cands.add(c["url"])
+                    c["source_id"] = sid
+                    pass3_candidates.append(c)
+                    all_candidates.append(c)
+
+    pass3_healed = _auto_heal_state_with_candidates(run_p, state, pass3_candidates, "pass3_tail_sweep")
+
+    # Save persistent frame_urls.json for cross-tool reuse
+    (run_p / "frame_urls.json").write_text(
+        json.dumps(all_candidates, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+    summary = {
+        "pass1_coarse": {
+            "candidates_found": len(pass1_candidates),
+            "items_healed": len(pass1_healed),
+            "healed_keys": [x["key"] for x in pass1_healed]
+        },
+        "pass2_dense_gap": {
+            "candidates_found": len(pass2_candidates),
+            "items_healed": len(pass2_healed),
+            "healed_keys": [x["key"] for x in pass2_healed]
+        },
+        "pass3_tail_sweep": {
+            "candidates_found": len(pass3_candidates),
+            "items_healed": len(pass3_healed),
+            "healed_keys": [x["key"] for x in pass3_healed]
+        },
+        "total_candidates": len(all_candidates),
+        "total_healed": len(pass1_healed) + len(pass2_healed) + len(pass3_healed),
+        "unresolved_remaining": len([it for it in state.get("items", []) if it.get("exception") or not it.get("canonical_url")])
+    }
+
+    (evidence_dir / "three_pass_extraction_summary.json").write_text(
+        json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+    return summary
 
 
 def find_item_in_video_timeline(
