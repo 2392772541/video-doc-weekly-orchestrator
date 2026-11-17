@@ -109,6 +109,10 @@ def parser():
     ext_f.add_argument("--doc", type=str, required=True, help="Feishu Document ID/Token")
     ext_f.add_argument("--out", type=Path, required=True, help="Output manifest JSON path")
     ext_f.add_argument("--platform", choices=sorted(w.VIDEO_PLATFORMS), help="Filter by platform")
+    clean_p = sub.add_parser("clean-cache", help="Clean up extracted video frames and temporary OCR caches")
+    clean_p.add_argument("--dir", type=Path, default=Path("."), help="Target workspace or run directory to scan and clean")
+    clean_p.add_argument("--all", action="store_true", help="Include final evidence screenshots (full purge)")
+    clean_p.add_argument("--dry-run", action="store_true", help="Simulate without deleting files")
     for name in ("apply", "audit", "render", "publish-plan", "published", "snapshot", "plan", "begin-write", "end-write", "reconcile", "status", "finish", "index"):
         s = sub.add_parser(name)
         s.add_argument("--run", type=Path, required=True)
@@ -181,6 +185,10 @@ def main(argv=None):
         res = sync_feishu_sidebar.sync_document_sidebar(args.doc, subsections_config=rules)
         output(res)
         return 0 if res.get("ok") else 2
+    if args.command == "clean-cache":
+        res = w.clean_run_cache(args.dir, include_evidence=args.all, dry_run=args.dry_run)
+        output(res)
+        return 0
     if args.command == "extract-feishu":
         import subprocess, extract_feishu
         cmd = f"lark-cli docs +fetch --doc {args.doc} --detail with-ids"

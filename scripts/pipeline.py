@@ -8,6 +8,7 @@ import json
 import os
 import subprocess
 import time
+import re
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 import weekly_core as w

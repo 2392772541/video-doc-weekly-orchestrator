@@ -2184,6 +2184,50 @@ Hope this helps!'''
                 self.assertEqual(state["items"][2]["canonical_url"], "https://www.douyin.com/video/7700912487595560218")
 
 
+    def test_clean_run_cache_behavior(self):
+        """Validates that clean_run_cache safely purges temporary OCR frames,
+        cleans temporary directories, preserves evidence screenshots by default,
+        and honors dry-run simulation.
+        """
+        import weekly_core as w
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base_p = Path(tmpdir)
+            t_dir = base_p / "timeline"
+            d_dir = base_p / "dense_frames"
+            e_dir = base_p / "evidence" / "screenshots"
+            t_dir.mkdir(parents=True)
+            d_dir.mkdir(parents=True)
+            e_dir.mkdir(parents=True)
+
+            (t_dir / "f1.jpg").write_bytes(b"temp1")
+            (t_dir / "f2.jpg").write_bytes(b"temp2")
+            (d_dir / "d1.jpg").write_bytes(b"dense1")
+            (e_dir / "item1.jpg").write_bytes(b"evidence1")
+            (base_p / "frame_p1_10s.jpg").write_bytes(b"loose1")
+
+            # 1. Dry run
+            dry_res = w.clean_run_cache(base_p, dry_run=True)
+            self.assertTrue(dry_res["dry_run"])
+            self.assertEqual(dry_res["deleted_count"], 4)
+            self.assertEqual(dry_res["preserved_evidence_count"], 1)
+            self.assertTrue((t_dir / "f1.jpg").is_file())
+
+            # 2. Real clean without evidence
+            clean_res = w.clean_run_cache(base_p, include_evidence=False, dry_run=False)
+            self.assertFalse(clean_res["dry_run"])
+            self.assertEqual(clean_res["deleted_count"], 4)
+            self.assertEqual(clean_res["preserved_evidence_count"], 1)
+            self.assertFalse((t_dir / "f1.jpg").is_file())
+            self.assertFalse((d_dir / "d1.jpg").is_file())
+            self.assertFalse((base_p / "frame_p1_10s.jpg").is_file())
+            self.assertTrue((e_dir / "item1.jpg").is_file())  # Preserved!
+
+            # 3. Clean with evidence
+            clean_all_res = w.clean_run_cache(base_p, include_evidence=True, dry_run=False)
+            self.assertEqual(clean_all_res["deleted_count"], 1)
+            self.assertFalse((e_dir / "item1.jpg").is_file())
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 

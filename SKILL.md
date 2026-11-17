@@ -226,6 +226,7 @@ python scripts/weekly.py pipeline \
 | `convert-preview`| `--doc <feishu_doc_id> [--delay 0.3]` | **终末阶段：将飞书文档中蓝色书签卡片原子转换为原生可交互视频预览** |
 | `sync-sidebar` | `--doc <feishu_doc_id>` | **飞书大纲侧边栏重构/修复**：将二级小标题提升为 H3、编号条目转为 H4，自动跳过已有项，彻底还原原视频侧边栏结构 |
 | `extract-feishu`| `--doc <feishu_doc_id> --out <manifest.json>` | **飞书周报逆向提取**：穿透支持普通书签与转换后的 iframe 播放器，逆向提取完整条目清册与所属小标题 |
+| `clean-cache` | `[--dir <dir>] [--all] [--dry-run]` | **缓存与临时抽帧清理**：一键安全清理中间抽帧临时缓存与碎片（timeline/dense_frames/temp_crops等），默认安全保护正式周报对照截图，支持 --dry-run 预检与 --all 深度清理 |
 | `search` | `--catalog <db.sqlite> --query <关键词>` | 跨期 SQLite 数据库与 HTML 索引快速关键词检索 |
 | `pipeline` | `--run <dir> --manifest <seed.json> [--feishu-doc <doc_id>]` | **一键端到端全自动运行周报制作、多渠道检索、双平台收藏与终末转预览全流程** |
 

@@ -936,3 +936,93 @@ def search_catalog(catalog, query, limit=30):
     uri = Path(catalog).resolve().as_uri() + "?mode=ro"
     with closing(sqlite3.connect(uri, uri=True, timeout=10)) as db:
         return [json.loads(row[0]) for row in db.execute("SELECT payload FROM entries WHERE " + clauses + " ORDER BY rowid DESC LIMIT ?", [*terms, limit])]
+def clean_run_cache(target_dir, include_evidence=False, dry_run=False):
+    target_p = Path(target_dir).resolve()
+    require(target_p.exists(), f"target_not_found: {target_p}")
+
+    temp_dir_names = {
+        "timeline", "dense_frames", "tail_frames", "temp_crops",
+        "p2_end_frames", "samples", "dense_p2_pre_end", "dense_p2_start",
+        "dense_gym", "dense_p1_end", "dense_song", "dense_ai"
+    }
+
+    deleted_files = []
+    cleaned_dirs = []
+    freed_bytes = 0
+    preserved_evidence_files = []
+
+    # 1. Walk directory tree
+    for root, dirs, files in os.walk(target_p):
+        cur_dir = Path(root)
+        dir_name = cur_dir.name.lower()
+        is_evidence_screenshots = (cur_dir.name == "screenshots" and cur_dir.parent.name == "evidence")
+
+        if is_evidence_screenshots:
+            if not include_evidence:
+                for f in files:
+                    if f.lower().endswith((".jpg", ".png", ".jpeg")):
+                        preserved_evidence_files.append(str(cur_dir / f))
+                continue
+
+        is_temp_dir = (
+            dir_name in temp_dir_names
+            or "dense" in dir_name
+            or "frames" in dir_name
+            or "crops" in dir_name
+        )
+
+        if is_temp_dir or (include_evidence and is_evidence_screenshots):
+            dir_had_deletes = False
+            for f in files:
+                if f.lower().endswith((".jpg", ".png", ".jpeg")):
+                    f_path = cur_dir / f
+                    try:
+                        sz = f_path.stat().st_size
+                    except Exception:
+                        sz = 0
+                    freed_bytes += sz
+                    deleted_files.append(str(f_path))
+                    dir_had_deletes = True
+                    if not dry_run:
+                        try:
+                            f_path.unlink()
+                        except Exception:
+                            pass
+            if dir_had_deletes:
+                cleaned_dirs.append(str(cur_dir))
+                if not dry_run:
+                    try:
+                        cur_dir.rmdir()
+                    except Exception:
+                        pass
+
+    # 2. Loose test frames in target directory root
+    loose_prefixes = (
+        "frame_p1_", "tmp_loc_", "test_p1_", "clean_crop_", "test_crop_",
+        "located_", "item25_real_frame_", "_f_", "_frame_", "_sub_",
+        "_crop_", "crop_top_"
+    )
+    for f_path in target_p.glob("*.jpg"):
+        if f_path.is_file() and any(f_path.name.startswith(pre) for pre in loose_prefixes):
+            try:
+                sz = f_path.stat().st_size
+            except Exception:
+                sz = 0
+            freed_bytes += sz
+            deleted_files.append(str(f_path))
+            if not dry_run:
+                try:
+                    f_path.unlink()
+                except Exception:
+                    pass
+
+    return {
+        "ok": True,
+        "target_dir": str(target_p),
+        "deleted_count": len(deleted_files),
+        "freed_bytes": freed_bytes,
+        "freed_mb": round(freed_bytes / (1024 * 1024), 2),
+        "cleaned_dirs_count": len(cleaned_dirs),
+        "preserved_evidence_count": len(preserved_evidence_files),
+        "dry_run": dry_run
+    }

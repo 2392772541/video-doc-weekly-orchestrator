@@ -330,6 +330,12 @@ def smart_capture_item_screenshot(run_dir: Path, item: dict, sources: dict | Non
     screen_dir = run_dir / "evidence" / "screenshots"
     screen_dir.mkdir(parents=True, exist_ok=True)
     card_target = screen_dir / f"{safe_key}_{int(ts or 0)}s_card.jpg"
+    if card_target.is_file():
+        rel_card = f"evidence/screenshots/{card_target.name}"
+        item["screenshot"] = rel_card
+        if used_timestamps is not None:
+            used_timestamps.add(ts or 0)
+        return {"healed": False, "screenshot": rel_card, "key": item.get("key"), "timestamp_seconds": ts}
 
     if video_path and Path(video_path).is_file():
         try:
