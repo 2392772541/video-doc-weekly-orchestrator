@@ -25,7 +25,9 @@ def resolve_embedded_player_url(url: str) -> str:
         m = re.search(r"bvid=([A-Za-z0-9]+)", url)
         if m:
             bvid = m.group(1)
-            if not bvid.startswith("BV"):
+            if bvid[:2].lower() == "bv":
+                bvid = "BV" + bvid[2:]
+            else:
                 bvid = "BV" + bvid
             return f"https://www.bilibili.com/video/{bvid}"
     elif "open.douyin.com" in url:
@@ -44,7 +46,8 @@ def extract(payload, platform=None):
     items, section, subsection, owner = [], "未分组", "", None
     for e in root.iter():
         heading = re.fullmatch(r"h([1-6])", e.tag)
-        if not heading and e.tag not in {"p", "li", "readonly-block", "iframe"}:
+        # 兼容飞书原生蓝色书签卡片（bookmark）与内嵌播放器（readonly-block / iframe）
+        if not heading and e.tag not in {"p", "li", "readonly-block", "iframe", "bookmark"}:
             continue
         if e.tag == "li" and any(c.tag in {"p", "li"} for c in e.iter() if c is not e):
             continue  # Visit nested blocks, not the aggregate parent's duplicate text.
@@ -81,7 +84,7 @@ def extract(payload, platform=None):
             if not kind or platform and platform != kind:
                 continue
             n = len(items) + 1
-            label = owner["title"] if owner else "待定位标题 " + str(n)
+            label = owner["title"] if owner else ((e.get("name") or "").strip() or ("待定位标题 " + str(n)))
             # An inline URL is not part of a numbered title.
             label = label.replace(url, "").strip() if numbered else label
             sub = "" if subsection == label else subsection

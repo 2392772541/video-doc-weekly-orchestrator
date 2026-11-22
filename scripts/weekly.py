@@ -3,13 +3,30 @@
 from __future__ import annotations
 import argparse
 import ctypes
+import importlib.util
 import json
 import os
+import re
 import shutil
 import sys
 from contextlib import contextmanager
 from pathlib import Path
 import weekly_core as w
+
+# 本机固定入口常量（跨工作目录复用，仅作只读默认定位，绝不缓存凭据）
+DEFAULT_GLOBAL_CATALOG = Path(r"E:\工程项目\codex项目合集\个人用\.weekly-library\catalog.sqlite")
+DEFAULT_WATCHED_FILE = Path(r"E:\工程项目\codex项目合集\且曼\douyin_watched_vids.json")
+
+
+def normalize_feishu_doc_token(doc_ref: str) -> str:
+    """从粘贴的飞书文档 URL 或裸 token 中提取纯净 token，避免 Windows lark-cli.CMD 批处理拆分 URL 中的 & 参数。"""
+    raw = (doc_ref or "").strip()
+    m = re.search(r"/(?:docx|doc)/([A-Za-z0-9_-]+)", raw)
+    if m:
+        return m.group(1)
+    if raw.startswith(("http://", "https://")):
+        return raw.split("#", 1)[0].split("?", 1)[0].rstrip("/")
+    return raw
 
 
 def output(data):
@@ -63,7 +80,7 @@ def parser():
     res.add_argument("--output", type=Path)
     res.add_argument("--apply-resolutions", type=Path)
     search = sub.add_parser("search", help="Query a local cross-issue catalog")
-    search.add_argument("--catalog", type=Path, required=True)
+    search.add_argument("--catalog", type=Path, default=None, help="Catalog SQLite path (defaults to WEEKLY_CATALOG_FILE or canonical global catalog)")
     search.add_argument("--query", required=True)
     search.add_argument("--limit", type=int, default=30)
     cap = sub.add_parser("capture-screenshots", help="Extract video frame screenshots from source video recording")
@@ -86,11 +103,12 @@ def parser():
     heal = sub.add_parser("auto-heal", help="End-to-end auto-heal: OCR screenshots, recover links, remove redundant images, and rebind layout")
     heal.add_argument("--run", type=Path, required=True)
     heal.add_argument("--keys", nargs="*", default=None)
-    pipe = sub.add_parser("pipeline", help="Full automated end-to-end pipeline: parse -> auto-heal -> render -> publish -> favorite & 2-round reconcile")
+    pipe = sub.add_parser("pipeline", help="[OFFLINE SIMULATION ONLY] Local sandbox pipeline harness; blocked in production by default")
     pipe.add_argument("--run", type=Path, required=True)
     pipe.add_argument("--manifest", type=Path, required=True)
     pipe.add_argument("--mode", choices=("full", "publish", "collect", "audit"), default="full")
-    pipe.add_argument("--feishu-doc", type=str, default=None, help="Target Feishu doc ID to convert blue links to previews at pipeline end")
+    pipe.add_argument("--feishu-doc", type=str, default=None, help="Forbidden in --offline-simulation mode (prevents accidental live Feishu writes)")
+    pipe.add_argument("--offline-simulation", action="store_true", help="Explicitly opt into pure local offline simulation (never use for real weekly production)")
     conv_p = sub.add_parser("convert-preview", help="Convert Feishu doc blue bookmark links to interactive iframe preview cards")
     conv_p.add_argument("--doc", type=str, required=True, help="Feishu Document ID/Token")
     conv_p.add_argument("--delay", type=float, default=0.3, help="Delay between block updates in seconds")
@@ -101,7 +119,15 @@ def parser():
     s_miss.add_argument("--chatgpt-results", type=Path, help="Path to json file containing ChatGPT search results to ingest")
     c_plan = sub.add_parser("collect-plan", help="Generate production browser scripts for two-platform collection")
     c_plan.add_argument("--run", type=Path, required=True)
+    c_plan.add_argument("--platform", choices=("all", "bilibili", "douyin"), default="all", help="Target platform(s) to plan (default: all configured)")
     c_plan.add_argument("--watched-file", type=Path, help="Path to JSON file containing watched video IDs to exclude (e.g. douyin_watched_vids.json)")
+    c_plan.add_argument("--runtime", choices=("all", "antigravity", "codex"), default="all", help="Target browser runtime scripts to emit (default: all)")
+    c_plan.add_argument("--no-default-watched", action="store_true", help="Disable fallback lookup of canonical douyin_watched_vids.json")
+    imp_col = sub.add_parser("import-collection", help="Import real browser collection result JSON (Bilibili inpage/CDP or Douyin 2-stage + 2-round readback) into run.json")
+    imp_col.add_argument("--run", type=Path, required=True)
+    imp_col.add_argument("--input", type=Path, required=True, help="Path to browser collection result JSON file")
+    imp_col.add_argument("--platform", choices=sorted(w.VIDEO_PLATFORMS), default=None, help="Target platform (optional if declared inside input JSON)")
+    imp_col.add_argument("--plan-id", default=None, help="Optional plan_id when input JSON does not carry snapshots.before")
     sync_sb = sub.add_parser("sync-sidebar", help="Synchronize and rebuild Feishu doc sidebar outline with H3 subsections")
     sync_sb.add_argument("--doc", type=str, required=True, help="Feishu Document ID/Token")
     sync_sb.add_argument("--rules", type=Path, help="Optional JSON file defining custom [(sub_title, anchor_keyword), ...]")
@@ -135,10 +161,27 @@ def parser():
 def main(argv=None):
     args = parser().parse_args(argv)
     if args.command == "doctor":
-        output({"memory": memory_status(), "python": sys.executable, "dependencies": {n: shutil.which(n) for n in ("ffmpeg", "ffprobe", "lark-cli", "opencli")}, "network_requests": 0, "external_writes": 0})
+        py_mods = {
+            m: bool(importlib.util.find_spec(m))
+            for m in ("rapidocr_onnxruntime", "paddleocr", "playwright")
+        }
+        output({
+            "memory": memory_status(),
+            "python": sys.executable,
+            "python_packages": py_mods,
+            "dependencies": {n: shutil.which(n) for n in ("ffmpeg", "ffprobe", "lark-cli", "opencli")},
+            "local_assets": {
+                "global_catalog": {"path": str(DEFAULT_GLOBAL_CATALOG), "exists": DEFAULT_GLOBAL_CATALOG.is_file()},
+                "watched_blacklist": {"path": str(DEFAULT_WATCHED_FILE), "exists": DEFAULT_WATCHED_FILE.is_file()},
+            },
+            "network_requests": 0,
+            "external_writes": 0,
+        })
         return 0
     if args.command == "search":
-        output(w.search_catalog(args.catalog, args.query, args.limit))
+        env_cat = os.environ.get("WEEKLY_CATALOG_FILE", "").strip()
+        catalog_path = args.catalog or (Path(env_cat) if env_cat else DEFAULT_GLOBAL_CATALOG)
+        output(w.search_catalog(catalog_path, args.query, args.limit))
         return 0
     if args.command == "resolve-links":
         import resolve_links
@@ -168,13 +211,43 @@ def main(argv=None):
         output(report)
         return 0
     if args.command == "pipeline":
+        if not getattr(args, "offline_simulation", False):
+            output({
+                "ok": False,
+                "error": "pipeline_blocked_in_production_offline_simulation_only",
+                "external_writes": 0,
+                "reason": (
+                    "weekly.py pipeline 仅用于纯本地离线演练（内部会合成模拟回执与模拟快照），"
+                    "严禁用于真实周报生产，防止产生假完成或误改线上飞书文档。"
+                ),
+                "real_workflow_commands": [
+                    "已有飞书周报补录收藏: extract-feishu -> init --mode collect -> apply -> snapshot -> collect-plan --runtime antigravity -> 浏览器执行脚本 -> import-collection -> reconcile -> convert-preview -> finish",
+                    "新一期录屏制作周报: init --mode full -> scan-video -> auto-heal/search-missing -> audit -> render -> 飞书发布并回读 published -> snapshot -> collect-plan --runtime antigravity -> 浏览器执行脚本 -> import-collection -> reconcile -> convert-preview -> finish",
+                    "仅做纯本地离线沙盒演练时，请显式传入 --offline-simulation（且严禁携带 --feishu-doc）。",
+                ],
+            })
+            return 2
+        if args.feishu_doc:
+            output({
+                "ok": False,
+                "error": "offline_simulation_forbids_live_feishu_doc",
+                "external_writes": 0,
+                "reason": "离线模拟模式严禁传入 --feishu-doc，禁止触发 sync-sidebar 或 convert-preview 线上飞书写操作。",
+            })
+            return 2
         import pipeline
-        res = pipeline.run_pipeline(args.run, args.manifest, args.mode, feishu_doc_id=args.feishu_doc)
+        res = pipeline.run_pipeline(
+            args.run,
+            args.manifest,
+            args.mode,
+            feishu_doc_id=None,
+            allow_remote_feishu=False,
+        )
         output(res)
         return 0
     if args.command == "convert-preview":
         import feishu_preview_converter
-        res = feishu_preview_converter.convert_all_bookmarks_to_previews(args.doc, delay=args.delay)
+        res = feishu_preview_converter.convert_all_bookmarks_to_previews(normalize_feishu_doc_token(args.doc), delay=args.delay)
         output(res)
         return 0 if res.get("ok") else 2
     if args.command == "sync-sidebar":
@@ -182,7 +255,7 @@ def main(argv=None):
         rules = None
         if args.rules and args.rules.is_file():
             rules = json.loads(args.rules.read_text(encoding="utf-8"))
-        res = sync_feishu_sidebar.sync_document_sidebar(args.doc, subsections_config=rules)
+        res = sync_feishu_sidebar.sync_document_sidebar(normalize_feishu_doc_token(args.doc), subsections_config=rules)
         output(res)
         return 0 if res.get("ok") else 2
     if args.command == "clean-cache":
@@ -191,8 +264,14 @@ def main(argv=None):
         return 0
     if args.command == "extract-feishu":
         import subprocess, extract_feishu
-        cmd = f"lark-cli docs +fetch --doc {args.doc} --detail with-ids"
-        raw_out = subprocess.check_output(cmd, shell=True, text=True, encoding="utf-8")
+        lark_bin = shutil.which("lark-cli") or "lark-cli"
+        clean_doc = normalize_feishu_doc_token(args.doc)
+        # 使用纯净 token 与参数数组调用，彻底避免 Windows lark-cli.CMD 拆分 URL 中的 & 查询参数
+        raw_out = subprocess.check_output(
+            [lark_bin, "docs", "+fetch", "--doc", clean_doc, "--detail", "with-ids", "--as", "user"],
+            text=True,
+            encoding="utf-8",
+        )
         payload = json.loads(raw_out)
         res = extract_feishu.extract(payload, platform=args.platform)
         args.out.parent.mkdir(parents=True, exist_ok=True)
@@ -268,59 +347,168 @@ def main(argv=None):
         return 0
     if args.command == "collect-plan":
         import real_collector
-        run_p = args.run.resolve()
-        st = w.read_json(run_p / "run.json")
-        scripts = {}
-        items = st.get("items", [])
-        
-        # Load watched video IDs if provided or present in common paths
-        watched_vids = []
-        watched_file = args.watched_file
-        if not watched_file:
-            for cand in [run_p / "douyin_watched_vids.json", Path.cwd() / "douyin_watched_vids.json"]:
-                if cand.is_file():
-                    watched_file = cand
-                    break
-        if watched_file and watched_file.is_file():
-            try:
-                watched_vids = json.loads(watched_file.read_text(encoding="utf-8"))
-                if isinstance(watched_vids, dict):
-                    watched_vids = watched_vids.get("watched_vids") or watched_vids.get("vids") or []
-            except Exception:
-                watched_vids = []
+        with locked(args.run) as (run_p, st):
+            old_hash = w.digest(st)
+            scripts = {}
+            items = st.get("items", [])
 
-        for plat in ("bilibili", "douyin"):
-            target = st["targets"][plat]
-            plan = w.plan_collection(st, run_p, plat)
-            if plat == "bilibili":
-                js = real_collector.generate_bilibili_browser_script(target["folder_name"], target["folder_id"], plan["missing_ids"])
+            runtime = getattr(args, "runtime", "all")
+            req_platform = getattr(args, "platform", "all")
+            if req_platform == "all":
+                configured_plats = [
+                    p for p in ("bilibili", "douyin")
+                    if p in st.get("targets", {}) and p in st.get("permissions", {}).get("collect", [])
+                ]
+                target_plats = configured_plats or ["bilibili", "douyin"]
             else:
-                # Filter out watched videos for Douyin
-                unwatched_plan_ids = [vid for vid in plan["missing_ids"] if vid not in set(watched_vids)]
-                js = real_collector.generate_douyin_browser_script(target["folder_name"], target["folder_id"], unwatched_plan_ids)
-            f_path = run_p / "evidence" / f"collect_{plat}.js"
-            f_path.write_text(js, encoding="utf-8")
-            scripts[plat] = {
-                "script_file": str(f_path),
-                "missing_count": len(plan["missing_ids"]),
-                "target_folder": target["folder_name"]
-            }
-            if plat == "douyin" and watched_vids:
-                scripts[plat]["watched_excluded_count"] = len(plan["missing_ids"]) - len(unwatched_plan_ids)
-                scripts[plat]["unwatched_planned_count"] = len(unwatched_plan_ids)
+                target_plats = [req_platform]
 
-        # Write watched filter report if watched_vids present
-        if watched_vids:
-            _, dy_watched = real_collector.filter_watched_items([it for it in items if it.get("platform") == "douyin"], watched_vids)
-            filter_report = {
-                "total_douyin_items": sum(1 for it in items if it.get("platform") == "douyin"),
-                "watched_excluded_count": len(dy_watched),
-                "unwatched_planned_count": len(unwatched_plan_ids) if 'unwatched_plan_ids' in locals() else 0
-            }
-            (run_p / "evidence" / "douyin_watched_filtering.json").write_text(
-                json.dumps(filter_report, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
-        output({"ok": True, "plans": scripts})
+            # 严格加载抖音已观看黑名单：显式指定缺失或文件 JSON 损坏必须报错，绝不静默清空黑名单
+            watched_vids = []
+            watched_file = args.watched_file
+            explicit_watched = watched_file is not None
+            if not watched_file and "douyin" in target_plats:
+                env_watched = os.environ.get("WEEKLY_WATCHED_FILE", "").strip()
+                if env_watched:
+                    watched_file = Path(env_watched)
+                    explicit_watched = True
+                else:
+                    candidates = [run_p / "douyin_watched_vids.json", Path.cwd() / "douyin_watched_vids.json"]
+                    if not getattr(args, "no_default_watched", False):
+                        candidates.append(DEFAULT_WATCHED_FILE)
+                    for cand in candidates:
+                        if cand.is_file():
+                            watched_file = cand
+                            break
+            if explicit_watched:
+                w.require(watched_file.is_file(), f"watched_file_missing: {watched_file}")
+            if watched_file and watched_file.is_file():
+                try:
+                    raw_watched = json.loads(watched_file.read_text(encoding="utf-8-sig"))
+                except Exception as exc:
+                    raise w.GateError(f"invalid_watched_file_json: {watched_file}") from exc
+                if isinstance(raw_watched, dict):
+                    raw_watched = raw_watched.get("watched_vids") if "watched_vids" in raw_watched else raw_watched.get("vids")
+                w.require(isinstance(raw_watched, list), f"invalid_watched_file_format_expected_list: {watched_file}")
+                watched_vids = raw_watched
+
+            # 建立按 ID 回查原始条目的索引，避免 plan["missing_ids"] 丢掉抖音 /note/ 与 /video/ 区分
+            douyin_items_by_id = {}
+            for it in items:
+                if it.get("platform") == "douyin" and it.get("id"):
+                    douyin_items_by_id.setdefault(str(it["id"]), it)
+
+            (run_p / "evidence").mkdir(parents=True, exist_ok=True)
+            for plat in target_plats:
+                w.require(plat in st.get("targets", {}), f"collection_target_not_resolved: {plat}")
+                target = st["targets"][plat]
+                if plat == "bilibili":
+                    plan = w.plan_collection(st, run_p, plat)
+                    planned_ids = list(plan["missing_ids"])
+                    entry = {
+                        "plan_id": plan["plan_id"],
+                        "missing_count": len(plan["missing_ids"]),
+                        "target_folder": target["folder_name"],
+                        "runtime": runtime,
+                    }
+                    if runtime in ("all", "codex"):
+                        js = real_collector.generate_bilibili_browser_script(target["folder_name"], target["folder_id"], planned_ids)
+                        f_path = run_p / "evidence" / "collect_bilibili.js"
+                        f_path.write_text(js, encoding="utf-8")
+                        entry["script_file"] = str(f_path)
+                    if runtime in ("all", "antigravity"):
+                        inpage_js = real_collector.generate_bilibili_inpage_js(target["folder_name"], target["folder_id"], planned_ids)
+                        inpage_path = run_p / "evidence" / "collect_bilibili_inpage.js"
+                        inpage_path.write_text(inpage_js, encoding="utf-8")
+                        cdp_py = real_collector.generate_playwright_cdp_collector("bilibili", target["folder_name"], target["folder_id"], planned_ids)
+                        cdp_path = run_p / "evidence" / "collect_bilibili_cdp.py"
+                        cdp_path.write_text(cdp_py, encoding="utf-8")
+                        entry["inpage_script_file"] = str(inpage_path)
+                        entry["cdp_script_file"] = str(cdp_path)
+                    scripts[plat] = entry
+                else:
+                    # 先校验抖音收藏前置门禁与写前快照，再把已观看排除项写入受证据保护的 collection_exclusions
+                    w.ready_for_collection(st, run_p, "douyin")
+                    w.require(st["snapshots"].get("douyin"), "full_fresh_snapshot_required")
+                    watched_set = {str(x) for x in watched_vids}
+                    dy_all_ids = w.expected_ids(st, "douyin", include_excluded=True)
+                    matched_watched_ids = [vid for vid in dy_all_ids if vid in watched_set]
+                    dy_exclusions = st.setdefault("collection_exclusions", {"douyin": {}, "bilibili": {}}).setdefault("douyin", {})
+                    for old_vid in [k for k, v in list(dy_exclusions.items()) if v.get("reason") == "watched_excluded" and k not in set(matched_watched_ids)]:
+                        dy_exclusions.pop(old_vid, None)
+                    if watched_vids:
+                        latest_snap_ids = set(st["snapshots"]["douyin"][-1]["ids"])
+                        dead_ids = {k for k, v in dy_exclusions.items() if v.get("reason") == "dead_link_confirmed"}
+                        unwatched_missing_count = sum(
+                            1 for vid in dy_all_ids
+                            if vid not in watched_set and vid not in dead_ids and vid not in latest_snap_ids
+                        )
+                        filter_report = {
+                            "watched_file": str(watched_file),
+                            "total_douyin_items": sum(1 for it in items if it.get("platform") == "douyin"),
+                            "watched_excluded_count": len(matched_watched_ids),
+                            "watched_excluded_ids": matched_watched_ids,
+                            "unwatched_planned_count": unwatched_missing_count,
+                        }
+                        w.write_json(run_p / "evidence" / "douyin_watched_filtering.json", filter_report)
+                        for vid in matched_watched_ids:
+                            w.record_collection_exclusion(
+                                st,
+                                run_p,
+                                "douyin",
+                                vid,
+                                "watched_excluded",
+                                detail={"source": Path(watched_file).name, "watched_file": str(watched_file)},
+                                evidence_files=["evidence/douyin_watched_filtering.json"],
+                            )
+
+                    plan = w.plan_collection(st, run_p, "douyin")
+                    unwatched_plan_ids = list(plan["missing_ids"])
+                    unwatched_plan_items = [
+                        {
+                            "id": str(vid),
+                            "canonical_url": (douyin_items_by_id.get(str(vid)) or {}).get("canonical_url", ""),
+                            "url": (douyin_items_by_id.get(str(vid)) or {}).get("canonical_url")
+                            or (douyin_items_by_id.get(str(vid)) or {}).get("original_url")
+                            or f"https://www.douyin.com/video/{vid}",
+                        }
+                        for vid in unwatched_plan_ids
+                    ]
+                    entry = {
+                        "plan_id": plan["plan_id"],
+                        "missing_count": len(plan["missing_ids"]),
+                        "target_folder": target["folder_name"],
+                        "runtime": runtime,
+                    }
+                    if runtime in ("all", "codex"):
+                        js = real_collector.generate_douyin_browser_script(target["folder_name"], target["folder_id"], unwatched_plan_items)
+                        f_path = run_p / "evidence" / "collect_douyin.js"
+                        f_path.write_text(js, encoding="utf-8")
+                        entry["script_file"] = str(f_path)
+                    if runtime in ("all", "antigravity"):
+                        inpage_js = real_collector.generate_douyin_inpage_helper_js(target["folder_name"], target["folder_id"], unwatched_plan_items)
+                        inpage_path = run_p / "evidence" / "collect_douyin_inpage_helper.js"
+                        inpage_path.write_text(inpage_js, encoding="utf-8")
+                        cdp_py = real_collector.generate_playwright_cdp_collector("douyin", target["folder_name"], target["folder_id"], unwatched_plan_items)
+                        cdp_path = run_p / "evidence" / "collect_douyin_cdp.py"
+                        cdp_path.write_text(cdp_py, encoding="utf-8")
+                        entry["inpage_script_file"] = str(inpage_path)
+                        entry["cdp_script_file"] = str(cdp_path)
+                    if watched_vids:
+                        entry["watched_file"] = str(watched_file)
+                        entry["watched_excluded_count"] = len(matched_watched_ids)
+                        entry["watched_excluded_ids"] = matched_watched_ids
+                        entry["unwatched_planned_count"] = len(unwatched_plan_ids)
+                    scripts[plat] = entry
+
+            # 持久化本次生成的 plan_id 与已观看排除记录，便于后续 import-collection / reconcile 直接使用
+            if old_hash != w.digest(st):
+                st["updated_at"] = w.now()
+                w.atomic_text(run_p / "run.previous.json", (run_p / "run.json").read_text(encoding="utf-8"))
+                w.write_json(run_p / "run.json", st)
+                with (run_p / "events.jsonl").open("a", encoding="utf-8") as f:
+                    f.write(w.compact({"at": st["updated_at"], "command": "collect-plan", "before_hash": old_hash, "after_hash": w.digest(st)}) + "\n")
+            output({"ok": True, "plans": scripts})
         return 0
     if args.command == "init":
         run = args.run.resolve()
@@ -373,6 +561,18 @@ def main(argv=None):
             result = w.begin_write(state, run, args.platform, args.id, args.plan_id)
         elif command == "end-write":
             result = w.end_write(state, run, args.attempt_id, w.read_json(args.input))
+        elif command == "import-collection":
+            import real_collector
+            raw_payload = w.read_json(args.input)
+            result = real_collector.ingest_collection_result(
+                run,
+                state,
+                raw_payload,
+                platform=args.platform,
+                plan_id=args.plan_id,
+                persist=False,
+            )
+            code = 0 if result.get("ok") else 2
         elif command == "reconcile":
             result = w.reconcile(state, run, args.platform)
             w.write_json(run / "audit" / (args.platform + "-reconcile.json"), result)

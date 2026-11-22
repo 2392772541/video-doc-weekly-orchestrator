@@ -26,6 +26,9 @@ WAIT_SECONDS = 5
 BVID = re.compile(r"BV[A-Za-z0-9]{10}\Z")
 AWEME = re.compile(r"[0-9]{19}\Z")
 SECRET_KEYS = {"cookie", "cookies", "authorization", "access_token", "refresh_token", "password", "client_secret", "bili_jct", "msToken", "a_bogus"}
+EXCLUSION_REASONS = {"watched_excluded", "dead_link_confirmed"}
+BILIBILI_RISK_CODES = {-352, -412, 412, -101, -111, -799, 429, -500, -502, -503, -504, 500, 502, 503, 504}
+BILIBILI_DEAD_CODES = {-404, -403, 62002, 62012, 62004}
 
 
 class GateError(ValueError):
@@ -228,7 +231,7 @@ def initialize(seed, mode="full"):
             layout = seed["layout"]
     else:
         layout = def_layout
-    return {"schema_version": SCHEMA, "run_id": str(uuid.uuid4()), "created_at": now(), "updated_at": now(), "mode": mode, "scope": seed.get("scope", "full_report"), "issue": {"title": seed.get("title", "未命名周报"), "week": seed.get("source_week", "")}, "permissions": {"publish": False, "collect": [], "user_request": ""}, "sources": {}, "inventory": {"expected_numbered": seed.get("numbered_item_count", sum(i["kind"] != "quick_news" for i in items)), "expected_quick_news": seed.get("quick_news_count", sum(i["kind"] == "quick_news" for i in items)), "review": None}, "layout": layout, "items": items, "target_names": {"feishu": seed.get("folder_name", "水球泡周报"), "douyin": "水球泡视频周报", "bilibili": "水球泡周报视频"}, "targets": {}, "publication": {}, "rendered": {}, "snapshots": {"douyin": [], "bilibili": []}, "plans": {}, "attempts": [], "status": "draft", "migration_note": "Existing URLs and old success flags are NOT verification. Review complete layout, introductions and quick news against source."}
+    return {"schema_version": SCHEMA, "run_id": str(uuid.uuid4()), "created_at": now(), "updated_at": now(), "mode": mode, "scope": seed.get("scope", "full_report"), "issue": {"title": seed.get("title", "未命名周报"), "week": seed.get("source_week", "")}, "permissions": {"publish": False, "collect": [], "user_request": ""}, "sources": {}, "inventory": {"expected_numbered": seed.get("numbered_item_count", sum(i["kind"] != "quick_news" for i in items)), "expected_quick_news": seed.get("quick_news_count", sum(i["kind"] == "quick_news" for i in items)), "review": None}, "layout": layout, "items": items, "target_names": {"feishu": seed.get("folder_name", "水球泡周报"), "douyin": "水球泡视频周报", "bilibili": "水球泡周报视频"}, "targets": {}, "publication": {}, "rendered": {}, "snapshots": {"douyin": [], "bilibili": []}, "collection_exclusions": {"douyin": {}, "bilibili": {}}, "plans": {}, "attempts": [], "status": "draft", "migration_note": "Existing URLs and old success flags are NOT verification. Review complete layout, introductions and quick news against source."}
 
 
 def get_item(state, key):
@@ -482,8 +485,132 @@ def apply_events(state, run, events, at=None):
     return state
 
 
-def expected_ids(state, platform):
-    return list(dict.fromkeys(i["id"] for i in state["items"] if i["platform"] == platform and i["kind"] == "video" and not i.get("exception")))
+def excluded_ids(state, platform):
+    """返回该平台归属当期有效视频条目且已被登记排除的映射 {id: exclusion_entry}。"""
+    raw_map = state.get("collection_exclusions", {}).get(platform, {})
+    if not isinstance(raw_map, dict) or not raw_map:
+        return {}
+    known = {i["id"] for i in state["items"] if i["platform"] == platform and i["kind"] == "video" and not i.get("exception")}
+    return {vid: exc for vid, exc in raw_map.items() if vid in known}
+
+
+def validate_collection_exclusion(state, run, platform, identity, exc):
+    """严格校验收藏阶段排除项（仅允许已观看名单排除或平台官方确认失效，强制绑定本地证据 SHA-256）。"""
+    require(platform in VIDEO_PLATFORMS, "bad_exclusion_platform")
+    valid_id(platform, identity)
+    require(isinstance(exc, dict), "bad_collection_exclusion")
+    no_secrets(exc)
+    reason = exc.get("reason")
+    require(reason in EXCLUSION_REASONS, "unsupported_collection_exclusion_reason: " + str(reason))
+    require(exc.get("id") == identity and exc.get("platform") == platform, "collection_exclusion_identity_mismatch")
+    check_evidence(run, exc.get("evidence"))
+    detail = exc.get("detail")
+    require(isinstance(detail, dict), "collection_exclusion_detail_required")
+    if reason == "watched_excluded":
+        require(platform == "douyin", "watched_exclusion_only_supported_for_douyin")
+        matched_in_ev = False
+        root = Path(run).resolve()
+        for ref in exc["evidence"]:
+            try:
+                ev_data = read_json(root / ref["path"])
+            except Exception:
+                continue
+            if isinstance(ev_data, dict):
+                id_list = ev_data.get("watched_excluded_ids") or ev_data.get("watched_vids") or ev_data.get("vids") or []
+                if identity in {str(x) for x in id_list}:
+                    matched_in_ev = True
+                    break
+            elif isinstance(ev_data, list) and identity in {str(x) for x in ev_data}:
+                matched_in_ev = True
+                break
+        require(matched_in_ev, "watched_exclusion_id_not_present_in_evidence: " + identity)
+    elif reason == "dead_link_confirmed":
+        if platform == "bilibili":
+            code = detail.get("code")
+            state_val = detail.get("state")
+            videos_val = detail.get("videos")
+            require(code not in BILIBILI_RISK_CODES, "risk_control_is_not_dead_link: " + str(code))
+            is_dead = (
+                (type(code) is int and code in BILIBILI_DEAD_CODES)
+                or (
+                    code in (0, None)
+                    and (
+                        (type(state_val) is int and state_val == -4)
+                        or (type(videos_val) is int and videos_val == 0)
+                    )
+                )
+            )
+            require(is_dead, "bilibili_dead_link_not_confirmed_by_official_status")
+        else:
+            status = str(detail.get("status") or "").strip().lower()
+            is_dead = (
+                detail.get("unavailable_banner") is True
+                or status in {"deleted", "private", "unavailable", "removed", "not_found"}
+            )
+            require(is_dead, "douyin_dead_link_not_confirmed_by_status")
+        matched_dead_ev = False
+        root = Path(run).resolve()
+        for ref in exc["evidence"]:
+            try:
+                ev_data = read_json(root / ref["path"])
+            except Exception:
+                continue
+            if isinstance(ev_data, dict):
+                if str(ev_data.get("id") or "") == identity:
+                    matched_dead_ev = True
+                    break
+                for list_key in ("dead_links", "receipts"):
+                    entries = ev_data.get(list_key)
+                    if isinstance(entries, list) and any(isinstance(x, dict) and str(x.get("id") or "") == identity for x in entries):
+                        matched_dead_ev = True
+                        break
+                if matched_dead_ev:
+                    break
+            elif isinstance(ev_data, list) and any(
+                (isinstance(x, dict) and str(x.get("id") or "") == identity) or str(x) == identity
+                for x in ev_data
+            ):
+                matched_dead_ev = True
+                break
+        require(matched_dead_ev, "dead_link_evidence_missing_identity: " + identity)
+
+
+def record_collection_exclusion(state, run, platform, identity, reason, detail, evidence_files, at=None):
+    """登记受证据保护的收藏排除项（绝不伪造已收藏，也不允许用排除掩盖未对账失败写入）。"""
+    no_secrets(detail)
+    require(platform in VIDEO_PLATFORMS, "bad_exclusion_platform")
+    valid_id(platform, identity)
+    known = {i["id"] for i in state["items"] if i["platform"] == platform and i["kind"] == "video" and not i.get("exception")}
+    require(identity in known, "exclusion_id_not_in_run_items: " + identity)
+    unreconciled = any(
+        a["platform"] == platform
+        and a["id"] == identity
+        and a["outcome"] in {"failed", "uncertain", "in_flight"}
+        and not a.get("observed_in_snapshot")
+        for a in state.get("attempts", [])
+    )
+    require(not unreconciled, "cannot_exclude_unreconciled_write_attempt: " + identity)
+    exc = {
+        "id": identity,
+        "platform": platform,
+        "reason": reason,
+        "detail": copy.deepcopy(detail or {}),
+        "recorded_at": at or now(),
+        "evidence": file_evidence(run, evidence_files),
+    }
+    validate_collection_exclusion(state, run, platform, identity, exc)
+    state.setdefault("collection_exclusions", {"douyin": {}, "bilibili": {}}).setdefault(platform, {})[identity] = exc
+    return exc
+
+
+def expected_ids(state, platform, include_excluded=False):
+    all_ids = list(dict.fromkeys(i["id"] for i in state["items"] if i["platform"] == platform and i["kind"] == "video" and not i.get("exception")))
+    if include_excluded:
+        return all_ids
+    exc_map = state.get("collection_exclusions", {}).get(platform, {})
+    if not isinstance(exc_map, dict) or not exc_map:
+        return all_ids
+    return [vid for vid in all_ids if vid not in exc_map]
 
 
 def parse_snapshot(state, run, raw, at=None):
@@ -582,9 +709,27 @@ def plan_collection(state, run, platform, at=None):
     for a in state["attempts"]:
         if a["platform"] == platform:
             require(stamp(s["started_at"]) > stamp(a.get("finished_at", a["started_at"])), "any_previous_write_requires_new_full_snapshot_before_replan")
+    exclusions = excluded_ids(state, platform)
+    for vid, exc in exclusions.items():
+        validate_collection_exclusion(state, run, platform, vid, exc)
     desired = expected_ids(state, platform)
     missing = [i for i in desired if i not in set(s["ids"])]
-    plan = {"plan_id": str(uuid.uuid4()), "platform": platform, "account_id": target["account_id"], "folder_id": target["folder_id"], "folder_name": target["folder_name"], "content_hash": content_hash(state), "snapshot_id": s["snapshot_id"], "created_at": at or now(), "target_ids": desired, "existing_ids": [i for i in desired if i not in missing], "missing_ids": missing, "excluded_exceptions": [i["key"] for i in state["items"] if i["platform"] == platform and i.get("exception")]}
+    plan = {
+        "plan_id": str(uuid.uuid4()),
+        "platform": platform,
+        "account_id": target["account_id"],
+        "folder_id": target["folder_id"],
+        "folder_name": target["folder_name"],
+        "content_hash": content_hash(state),
+        "snapshot_id": s["snapshot_id"],
+        "created_at": at or now(),
+        "target_ids": desired,
+        "existing_ids": [i for i in desired if i not in missing],
+        "missing_ids": missing,
+        "excluded_exceptions": [i["key"] for i in state["items"] if i["platform"] == platform and i.get("exception")],
+        "excluded_watched": [vid for vid, exc in exclusions.items() if exc["reason"] == "watched_excluded"],
+        "excluded_dead_links": [vid for vid, exc in exclusions.items() if exc["reason"] == "dead_link_confirmed"],
+    }
     state["plans"][platform] = plan
     return plan
 
@@ -594,13 +739,19 @@ def begin_write(state, run, platform, identity, plan_id, at=None):
     ready_for_collection(state, run, platform, at)
     plan = state["plans"].get(platform, {})
     require(plan.get("plan_id") == plan_id and plan.get("content_hash") == content_hash(state), "stale_or_wrong_plan")
-    fresh(plan["created_at"], SNAPSHOT_AGE, at)
+    relevant = [a for a in state["attempts"] if a["platform"] == platform]
+    same_plan = [a for a in relevant if a.get("plan_id") == plan_id]
+    if same_plan:
+        # 同批次连续串行写入跨越 15 分钟时，校验计划在 24h 内且距上一条写入未停顿超 15 分钟
+        fresh(plan["created_at"], LINK_AGE, at)
+        fresh(same_plan[-1].get("finished_at", same_plan[-1]["started_at"]), SNAPSHOT_AGE, at)
+    else:
+        fresh(plan["created_at"], SNAPSHOT_AGE, at)
     require(identity in plan["missing_ids"], "id_not_in_fresh_missing_set")
     target = state["targets"][platform]
     require(plan["account_id"] == target["account_id"] and plan["folder_id"] == target["folder_id"], "plan_target_changed")
-    relevant = [a for a in state["attempts"] if a["platform"] == platform]
     for a in relevant:
-        require(a["outcome"] in {"acknowledged", "ui_confirmed"} or a.get("observed_in_snapshot"), "unreconciled_write_must_stop_batch")
+        require(a["outcome"] in {"acknowledged", "ui_confirmed", "already_favorited"} or a.get("observed_in_snapshot"), "unreconciled_write_must_stop_batch")
         require(not(a["plan_id"] == plan_id and a["id"] == identity), "do_not_replay_same_plan_item")
     if relevant:
         require(stamp(at) - stamp(relevant[-1].get("finished_at", relevant[-1]["started_at"])) >= WAIT_SECONDS, "wait_at_least_5_seconds_between_writes")
@@ -615,11 +766,20 @@ def end_write(state, run, attempt_id, data, at=None):
     require(len(matches) == 1 and matches[0]["outcome"] == "in_flight", "attempt_not_in_flight")
     a = matches[0]
     outcome = data["outcome"]
-    require(outcome in {"acknowledged", "ui_confirmed", "uncertain", "failed"}, "invalid_write_outcome")
+    require(outcome in {"acknowledged", "ui_confirmed", "already_favorited", "uncertain", "failed"}, "invalid_write_outcome")
     if outcome == "acknowledged":
         codes = data.get("codes", {})
         needed = ("favorite", "folder_add") if a["platform"] == "douyin" else ("favorite",)
         require(all(type(codes.get(k)) is int and codes[k] == 0 for k in needed), "all_write_business_codes_must_be_zero")
+    if outcome == "already_favorited":
+        if a["platform"] == "bilibili":
+            codes = data.get("codes", {})
+            require(type(codes.get("favorite")) is int and codes["favorite"] == 11201, "bilibili_already_favorited_requires_code_11201")
+        else:
+            ui = data.get("ui", {})
+            require(all(ui.get(k) == a[k] for k in ("account_id", "folder_id", "id")), "ui_receipt_wrong_identity_or_folder")
+            require(ui.get("favorite_visible") is True and ui.get("folder_selected_visible") is True, "douyin_already_favorited_requires_visible_folder_state")
+            a["ui"] = ui
     if outcome == "ui_confirmed":
         ui = data.get("ui", {})
         require(all(ui.get(k) == a[k] for k in ("account_id", "folder_id", "id")), "ui_receipt_wrong_identity_or_folder")
@@ -634,6 +794,9 @@ def end_write(state, run, attempt_id, data, at=None):
 
 def reconcile(state, run, platform, at=None):
     ready_for_collection(state, run, platform, at)
+    exclusions = excluded_ids(state, platform)
+    for vid, exc in exclusions.items():
+        validate_collection_exclusion(state, run, platform, vid, exc)
     desired = expected_ids(state, platform)
     snapshots = state["snapshots"][platform]
     require(len(snapshots) >= 2, "two_complete_readback_rounds_required")
@@ -647,7 +810,24 @@ def reconcile(state, run, platform, at=None):
         check_evidence(run, s["evidence"])
         require(all(stamp(s["started_at"]) > stamp(a.get("finished_at", a["started_at"])) for a in writes), "readback_predates_last_write")
     missing = {"round1": [x for x in desired if x not in set(first["ids"])], "round2": [x for x in desired if x not in set(second["ids"])]}
-    return {"ok": not any(missing.values()), "platform": platform, "target_count": len(desired), "folder_name": target["folder_name"], "folder_id": target["folder_id"], "account_id": target["account_id"], "missing": missing, "snapshot_ids": [first["snapshot_id"], second["snapshot_id"]], "pages": [first["page_count"], second["page_count"]], "verified_at": second["finished_at"], "content_hash": content_hash(state)}
+    return {
+        "ok": not any(missing.values()),
+        "platform": platform,
+        "target_count": len(desired),
+        "excluded_count": len(exclusions),
+        "excluded": {
+            "watched_excluded": [vid for vid, exc in exclusions.items() if exc["reason"] == "watched_excluded"],
+            "dead_link_confirmed": [vid for vid, exc in exclusions.items() if exc["reason"] == "dead_link_confirmed"],
+        },
+        "folder_name": target["folder_name"],
+        "folder_id": target["folder_id"],
+        "account_id": target["account_id"],
+        "missing": missing,
+        "snapshot_ids": [first["snapshot_id"], second["snapshot_id"]],
+        "pages": [first["page_count"], second["page_count"]],
+        "verified_at": second["finished_at"],
+        "content_hash": content_hash(state),
+    }
 
 
 CALLOUT = "阅读与收藏提示：黑色常规标题为抖音 / B站作品；红色加粗标题为图文长文 / 网页资讯 / 开源工具 / 随笔。未确认的原作品不会用相似视频顶替。"
@@ -874,14 +1054,23 @@ def index_rows(state, run, at=None):
         collection = "not_applicable"
         verified_at = ""
         if it["kind"] == "video":
-            try:
-                c = collections.get(it["platform"])
-                require(c is not None, "collection_not_reconciled")
-                matched = it["id"] and it["id"] not in c["missing"]["round1"] + c["missing"]["round2"]
-                collection = "confirmed" if matched and link_status == "verified" else "pending"
-                verified_at = c["verified_at"] if collection == "confirmed" else ""
-            except (GateError, OSError, KeyError, ValueError):
-                collection = "pending"
+            exc = state.get("collection_exclusions", {}).get(it["platform"], {}).get(it["id"])
+            if exc and it["id"]:
+                try:
+                    validate_collection_exclusion(state, run, it["platform"], it["id"], exc)
+                    collection = "dead_link_confirmed" if exc["reason"] == "dead_link_confirmed" else "excluded_watched"
+                    verified_at = ""
+                except (GateError, OSError, KeyError, ValueError):
+                    collection = "pending"
+            else:
+                try:
+                    c = collections.get(it["platform"])
+                    require(c is not None, "collection_not_reconciled")
+                    matched = it["id"] and it["id"] not in c["missing"]["round1"] + c["missing"]["round2"]
+                    collection = "confirmed" if matched and link_status == "verified" else "pending"
+                    verified_at = c["verified_at"] if collection == "confirmed" else ""
+                except (GateError, OSError, KeyError, ValueError):
+                    collection = "pending"
         cand_url = it.get("candidate_url") or next((c.get("url") for c in it.get("candidates", []) if c.get("match_type") == "text_search_candidate"), "")
         screenshot = it.get("screenshot") or next((c.get("screenshot") for c in it.get("candidates", []) if c.get("screenshot")), "")
         rows.append({"record_key": state["run_id"] + ":" + it["key"], "run_id": state["run_id"], "item_key": it["key"], "issue": state["issue"]["title"], "week": state["issue"]["week"], "section": it["section"], "subsection": it.get("subsection", ""), "title": it["title"], "author": it["author"], "platform": it["platform"], "id": it["id"] or next(iter(re.findall(r"BV[A-Za-z0-9]{10}|(?<![0-9])[0-9]{19}(?![0-9])", it["original_url"])), ""), "original_url": it["original_url"], "url": it["canonical_url"], "link_status": link_status, "collection": collection, "verified_at": verified_at, "candidate_url": cand_url, "screenshot": screenshot, "source": it["source"], "candidates": it["candidates"], "document_url": state.get("publication", {}).get("document_url", ""), "folder_name": state["targets"].get(it["platform"], {}).get("folder_name", ""), "folder_url": state["targets"].get(it["platform"], {}).get("folder_url", ""), "run_path": str(Path(run).resolve())})
@@ -895,7 +1084,18 @@ def render_index_html(rows, destination):
         return '<a rel="noreferrer" target="_blank" href="' + html.escape(url, quote=True) + '">' + html.escape(label) + '</a>'
     body = []
     for r in rows:
-        label = "已核验收藏" if r["collection"] == "confirmed" else "未确认原作品" if r["link_status"] != "verified" else "待收藏" if r["collection"] == "pending" else "阅读项"
+        if r["collection"] == "confirmed":
+            label = "已核验收藏"
+        elif r["collection"] == "excluded_watched":
+            label = "已观看排除（未收藏）"
+        elif r["collection"] == "dead_link_confirmed":
+            label = "失效稿件（已存证未收藏）"
+        elif r["link_status"] != "verified":
+            label = "未确认原作品"
+        elif r["collection"] == "pending":
+            label = "待收藏"
+        else:
+            label = "阅读项"
         links = safe_link(r["url"], "打开原作品") if r["link_status"] == "verified" else ""
         if r["link_status"] != "verified" and r["original_url"]:
             links += '<details><summary>原记录链接（待核验）</summary>' + safe_link(r["original_url"], r["original_url"]) + '</details>'

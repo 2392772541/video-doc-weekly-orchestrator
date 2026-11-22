@@ -17,10 +17,19 @@ import multi_search_resolver
 import real_collector
 
 
-def run_pipeline(run_dir: Path | str, manifest_path: Path | str, mode: str = "full", ffmpeg_path: str | None = None, feishu_doc_id: str | None = None) -> dict:
+def run_pipeline(
+    run_dir: Path | str,
+    manifest_path: Path | str,
+    mode: str = "full",
+    ffmpeg_path: str | None = None,
+    feishu_doc_id: str | None = None,
+    allow_remote_feishu: bool = True,
+) -> dict:
     run_path = Path(run_dir).resolve()
     manifest_p = Path(manifest_path).resolve()
     w.require(manifest_p.is_file(), f"manifest_missing: {manifest_p}")
+    if not allow_remote_feishu:
+        w.require(not feishu_doc_id, "offline_simulation_forbids_live_feishu_doc")
 
     evidence_dir = run_path / "evidence"
     screenshots_dir = evidence_dir / "screenshots"
@@ -28,7 +37,7 @@ def run_pipeline(run_dir: Path | str, manifest_path: Path | str, mode: str = "fu
     screenshots_dir.mkdir(parents=True, exist_ok=True)
 
     seed_data = json.loads(manifest_p.read_text(encoding="utf-8"))
-    target_doc_id = feishu_doc_id or seed_data.get("feishu_doc_id") or seed_data.get("doc_id")
+    target_doc_id = (feishu_doc_id or seed_data.get("feishu_doc_id") or seed_data.get("doc_id")) if allow_remote_feishu else None
     
     # 1. Initialize State
     state = w.initialize(seed_data, mode=mode)
@@ -260,19 +269,20 @@ def run_pipeline(run_dir: Path | str, manifest_path: Path | str, mode: str = "fu
         if it.get("exception") or not it.get("canonical_url")
     ]
     search_healed = []
-    for it in unresolved_items:
-        bili_cand = multi_search_resolver.find_best_bilibili_candidate(it)
-        if bili_cand:
-            apply_res = multi_search_resolver.apply_search_resolutions_to_state(
-                run_path, state, [bili_cand]
-            )
-            if apply_res.get("applied_count", 0) > 0:
-                search_healed.append({
-                    "key": it.get("key"),
-                    "title": it.get("title"),
-                    "found_url": bili_cand["url"],
-                    "platform": "bilibili"
-                })
+    if allow_remote_feishu:
+        for it in unresolved_items:
+            bili_cand = multi_search_resolver.find_best_bilibili_candidate(it)
+            if bili_cand:
+                apply_res = multi_search_resolver.apply_search_resolutions_to_state(
+                    run_path, state, [bili_cand]
+                )
+                if apply_res.get("applied_count", 0) > 0:
+                    search_healed.append({
+                        "key": it.get("key"),
+                        "title": it.get("title"),
+                        "found_url": bili_cand["url"],
+                        "platform": "bilibili"
+                    })
 
     # Export ChatGPT Deep-Search Prompt Sheet for remaining unresolved
     rem_unresolved = [
@@ -442,8 +452,8 @@ def run_pipeline(run_dir: Path | str, manifest_path: Path | str, mode: str = "fu
     index_res = w.export_index(state, run_path, catalog_path)
 
     # 9. Feishu Outline & Sidebar Synchronization (Rebuild H3 Subsections & H4 Items)
-    sidebar_sync_result = None
-    if target_doc_id:
+    sidebar_sync_result = None if allow_remote_feishu else {"skipped": True, "reason": "offline_simulation_no_remote_writes"}
+    if allow_remote_feishu and target_doc_id:
         try:
             import sync_feishu_sidebar
             # Dynamically derive subsections and their anchor items from items list
@@ -475,8 +485,8 @@ def run_pipeline(run_dir: Path | str, manifest_path: Path | str, mode: str = "fu
 
     # 10. Feishu Bookmark to Preview Conversion (Strict Final Stage)
     # Executed strictly after both platforms collection and reconcile are completed.
-    preview_conv_result = None
-    if target_doc_id:
+    preview_conv_result = None if allow_remote_feishu else {"skipped": True, "reason": "offline_simulation_no_remote_writes"}
+    if allow_remote_feishu and target_doc_id:
         try:
             import feishu_preview_converter
             preview_conv_result = feishu_preview_converter.convert_all_bookmarks_to_previews(target_doc_id)
@@ -493,6 +503,8 @@ def run_pipeline(run_dir: Path | str, manifest_path: Path | str, mode: str = "fu
 
     return {
         "ok": True,
+        "simulated": True,
+        "allow_remote_feishu": allow_remote_feishu,
         "run_id": state["run_id"],
         "issue": state["issue"]["title"],
         "items_count": len(state["items"]),

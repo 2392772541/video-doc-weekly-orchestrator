@@ -7,7 +7,9 @@ description: "全流程自动化制作且曼/水球泡设计周报，智能检�
 
 **一个统一入口、一份权威状态机、同一套证据链。** 彻底告别过去“三个对话割裂、大纲小标题还原不彻底、视频找不到、截图与链接混杂不精准、声称完成但在收藏夹里看不到、分类建夹繁琐零散、抖音重复添加已观看视频、飞书全是蓝色小链接不便预览”的顽疾！
 
-这是 **Codex 执行型 Skill**：Agent 按照既定权威流水线协调调用已安装的 OCR、飞书 CLI、浏览器（In-App Browser / Playwright）与搜索工具。附带 Python 状态机负责严格去重、门禁校验、两轮对账与跨期索引。**严禁任何虚假 mock 回执，严禁同主题视频冒充，严禁有链接还放截图，严禁无外链截图张冠李戴，严格在收藏完成后执行飞书链接转预览！**
+这是 **Codex / Antigravity 双端执行型 Skill**：Agent 按照既定权威流水线协调调用已安装的 OCR、飞书 CLI（`lark-cli`）、浏览器（Codex 下为 `cua_repl` / In-App Browser，Antigravity 下为原生 `browser` 子代理页内 JS 或 Playwright CDP）与搜索工具。附带 Python 状态机负责严格去重、门禁校验、两轮对账与跨期索引。**严禁任何虚假 mock 回执，严禁同主题视频冒充，严禁有链接还放截图，严禁无外链截图张冠李戴，严格在收藏完成后执行飞书链接转预览！**
+
+> 本机固定路径、飞书 `水球泡周报` 目录链接、抖音/B站单一总夹锚点及跨端运行时映射详见 [references/local-profile.md](references/local-profile.md)。
 
 
 ## 核心架构与六大闭环阶段
@@ -153,12 +155,19 @@ Agent 必须严格按照以下 4 步执行收藏闭环，绝不可跳步：
    - **防风控间隔**：每条操作强制间隔 $\ge 5$ 秒。
 
 2. **步骤 2：Agent 真实调起浏览器执行脚本**：
-   - **对于抖音**：Agent 通过 cua_repl 在当前已登录抖音标签页中执行 collect_douyin.js 的内容（直点默认收藏 / 单一总夹，彻底废弃繁琐的板块分类文件夹，杜绝多级文件夹弹窗定位失败）；
-   - **对于 B 站**：Agent 通过 cua_repl 在已登录 B 站标签页中执行 collect_bilibili.js 的内容（直点默认收藏 / 单一总夹，API 与 UI 优先收纳，不建碎片化小文件夹）；
-   - **异常阻断**：若脚本返回 `{ success: false, error: "not_logged_in" }`，Agent **必须立即停下向用户请求登录**，严禁伪造成功！
+   - **Antigravity 环境（无 `cua_repl`）**：
+     - **B 站**：优先通过原生 `browser` 子代理在已登录的 `bilibili.com` 标签页执行 `evidence/collect_bilibili_inpage.js`（零 `tab.playwright` 依赖，内置登录预检、写前去重、>=5.5s 节流官方 Deal API、失效稿件审计及写后两轮全量分页回读），或在本机调试浏览器下运行 `evidence/collect_bilibili_cdp.py`；
+     - **抖音**：通过原生 `browser` 子代理在已登录的 `douyin.com` 标签页加载 `evidence/collect_douyin_inpage_helper.js`（挂载 `window.__weeklyDouyinHelper`），按阶段 1（单作品 `clickCollectIfUncollected`，绝不取消已有收藏，间隔 >=5s）→ 阶段 2（进入【水球泡视频周报】核对写前/写后作品数增量 + `findModalTargetCards` 精准勾选入夹 + `scrapeVisibleFolderIds` 两轮回读）完成真实入夹；也可先用 `evidence/collect_douyin_cdp.py` 完成阶段 1 串行点亮；
+   - **Codex 环境**：通过 `cua_repl` 在当前已登录标签页中执行 `evidence/collect_douyin.js` / `evidence/collect_bilibili.js`；
+   - **异常阻断**：若脚本返回 `{ ok: false, error: "not_logged_in" }` 或 `{ success: false, error: "not_logged_in" }`，Agent **必须立即停下向用户请求登录**，严禁伪造成功！
 
-3. **步骤 3：真实回执登记与状态落盘**：
-   将浏览器返回的真实 `receipts` 结果，通过状态机记录到 `run.json` 和 `evidence/receipt_*.json`。
+3. **步骤 3：真实回执与快照一键入账落盘**：
+   将浏览器返回的真实 JSON（B 站 `collect_bilibili_inpage.js`/`collect_bilibili_cdp.py` 输出，或抖音两阶段回执 + `buildUiSnapshot`/`scrapeVisibleFolderIds` 两轮回读）保存至 `evidence/`，通过统一 CLI 一键入账至 `run.json`：
+   ```bash
+   python scripts/weekly.py import-collection --run <run_dir> --platform bilibili --input <run_dir>/evidence/bilibili_collection_result.json
+   python scripts/weekly.py import-collection --run <run_dir> --platform douyin --input <run_dir>/evidence/douyin_collection_result.json
+   ```
+   入账命令会自动校验并登记 `dead_link_confirmed`（受证据保护排除，不中断同批后续写入）、`already_favorited`（11201 幂等回执并继续接受两轮回读核验）及两轮回读快照。
 
 4. **步骤 4：真实两轮全量快照回读与对账（强制验收门禁）**：
    ```bash
@@ -197,16 +206,15 @@ Agent 必须严格按照以下 4 步执行收藏闭环，绝不可跳步：
 2. 跨期支持按期号、栏目、标题、作者、BVID、抖音 ID 秒级毫秒检索。
 
 
-## 一键端到端全自动运行命令
+## 生产执行与离线演练防呆说明
+
+> **严禁在生产环境直接调用 `weekly.py pipeline`**！`scripts/pipeline.py` 内部会合成模拟飞书回读与模拟收藏快照，仅用于纯本地沙盒演练。命令行默认强阻断 `pipeline`，仅当显式传入 `--offline-simulation` 时才允许纯本地演练，且严禁结合 `--feishu-doc` 触发任何线上飞书写操作。
+> 真实周报生产必须按上述分步命令真实执行并核验回读（`extract-feishu` → `init` → `apply` → `snapshot` → `collect-plan --runtime antigravity` → 浏览器真实执行 → `import-collection` → `reconcile` → `convert-preview` → `finish`）。
 
 ```bash
-python scripts/weekly.py pipeline \
-  --run <run_dir> \
-  --manifest <reviewed-seed.json> \
-  --mode full \
-  --feishu-doc <feishu_doc_id>
+# 仅限离线本地沙盒演练（严禁用于真实周报生产，禁止带 --feishu-doc）
+python scripts/weekly.py pipeline --run <sandbox_run_dir> --manifest <seed.json> --mode full --offline-simulation
 ```
-*注：指定 `--feishu-doc` 参数后，流水线会在全部视频收藏并两轮对账确认无误后，自动触发第五阶段的终末蓝色链接转原生预览卡片，实现全链路真正一条龙！*
 
 
 ## 常用子命令速查表
@@ -221,14 +229,15 @@ python scripts/weekly.py pipeline \
 | `search-missing`| `--run <dir> [--chatgpt-results <res.json>]` | 执行多渠道检索（B站API直搜、ChatGPT结果导入、Web搜）补全缺失视频 |
 | `render` | `--run <dir> [--allow-partial]` | 严格执行互斥门禁，渲染生成标准 Markdown 与飞书 XML 周报 |
 | `published` | `--run <dir> --input <pub.json>` | 回读并核验飞书云文档在线状态、版本号及链接完整性 |
-| `collect-plan` | `--run <dir>` | 生成双平台收藏计划与已登录浏览器自动化批处理执行脚本 |
-| `reconcile` | `--run <dir> --platform <douyin/bilibili>` | 基于真实两轮快照执行全量 0 遗漏对账检查 |
+| `collect-plan` | `--run <dir> [--runtime antigravity]` | 生成双平台收藏计划与已登录浏览器执行脚本，自动持久化抖音已观看排除记录 |
+| `import-collection` | `--run <dir> --platform <bilibili/douyin> --input <res.json>` | **真实浏览器收藏结果一键入账**：落盘快照与回执证据、登记已存证失效稿件与幂等已收藏项并执行对账 |
+| `reconcile` | `--run <dir> --platform <douyin/bilibili>` | 基于真实两轮快照执行全量 0 遗漏对账检查（诚实区分已观看排除与官方失效稿件） |
 | `convert-preview`| `--doc <feishu_doc_id> [--delay 0.3]` | **终末阶段：将飞书文档中蓝色书签卡片原子转换为原生可交互视频预览** |
 | `sync-sidebar` | `--doc <feishu_doc_id>` | **飞书大纲侧边栏重构/修复**：将二级小标题提升为 H3、编号条目转为 H4，自动跳过已有项，彻底还原原视频侧边栏结构 |
 | `extract-feishu`| `--doc <feishu_doc_id> --out <manifest.json>` | **飞书周报逆向提取**：穿透支持普通书签与转换后的 iframe 播放器，逆向提取完整条目清册与所属小标题 |
 | `clean-cache` | `[--dir <dir>] [--all] [--dry-run]` | **缓存与临时抽帧清理**：一键安全清理中间抽帧临时缓存与碎片（timeline/dense_frames/temp_crops等），默认安全保护正式周报对照截图，支持 --dry-run 预检与 --all 深度清理 |
 | `search` | `--catalog <db.sqlite> --query <关键词>` | 跨期 SQLite 数据库与 HTML 索引快速关键词检索 |
-| `pipeline` | `--run <dir> --manifest <seed.json> [--feishu-doc <doc_id>]` | **一键端到端全自动运行周报制作、多渠道检索、双平台收藏与终末转预览全流程** |
+| `pipeline` | `--run <dir> --manifest <seed.json> --offline-simulation` | **仅限纯本地离线沙盒演练**（默认生产强阻断，严禁配合 `--feishu-doc` 写线上文档） |
 
 ## 典型排障与避坑指引（持续对齐实战沉淀）
 
