@@ -139,6 +139,19 @@ def parser():
     clean_p.add_argument("--dir", type=Path, default=Path("."), help="Target workspace or run directory to scan and clean")
     clean_p.add_argument("--all", action="store_true", help="Include final evidence screenshots (full purge)")
     clean_p.add_argument("--dry-run", action="store_true", help="Simulate without deleting files")
+    tr_p = sub.add_parser("build-transcripts", help="Stage 7: extract audio, transcribe via Tingwu (with RTX 4070 FunASR quota fallback), build companion doc, and publish consolidated entry to zhuanlu")
+    tr_p.add_argument("--run", type=Path, required=True, help="Target weekly run directory")
+    tr_p.add_argument("--engine", choices=("tingwu", "local"), default="tingwu", help="Primary transcription engine (default: tingwu with auto FunASR fallback on quota limit)")
+    tr_p.add_argument("--headless", action="store_true", help="Run persistent Tingwu Chrome headlessly")
+    tr_p.add_argument("--no-upload", action="store_true", help="Generate local companion Markdown only without uploading to zhuanlu")
+    tr_p.add_argument("--upload-partial", action="store_true", help="Allow uploading to zhuanlu even when --limit leaves pending items")
+    tr_p.add_argument("--category", default="直播回放与周刊", help="Target zhuanlu category (default: 直播回放与周刊)")
+    tr_p.add_argument("--status", default="未研究", help="Target zhuanlu study status (default: 未研究)")
+    tr_p.add_argument("--zhuanlu-workspace", type=Path, default=None, help="Optional override path for 通译转录 workspace")
+    tr_p.add_argument("--catalog", type=Path, default=None, help="Optional cross-issue catalog SQLite to refresh index.html with companion link")
+    tr_p.add_argument("--limit", type=int, default=None, help="Optional max number of pending video items to process in this invocation")
+    tr_p.add_argument("--force", action="store_true", help="Force re-transcribe already checkpointed items")
+    tr_p.add_argument("--keep-audio", action="store_true", help="Keep temporary extracted MP3 audio files instead of auto-cleaning")
     for name in ("apply", "audit", "render", "publish-plan", "published", "snapshot", "plan", "begin-write", "end-write", "reconcile", "status", "finish", "index"):
         s = sub.add_parser(name)
         s.add_argument("--run", type=Path, required=True)
@@ -262,6 +275,26 @@ def main(argv=None):
         res = w.clean_run_cache(args.dir, include_evidence=args.all, dry_run=args.dry_run)
         output(res)
         return 0
+    if args.command == "build-transcripts":
+        import weekly_transcripts
+        res = weekly_transcripts.run_build_transcripts(
+            args.run,
+            engine=args.engine,
+            headless=args.headless,
+            upload_to_zhuanlu=not args.no_upload,
+            upload_partial=args.upload_partial,
+            zhuanlu_category=args.category,
+            zhuanlu_status=args.status,
+            zhuanlu_workspace=args.zhuanlu_workspace,
+            limit=args.limit,
+            force=args.force,
+            keep_audio=args.keep_audio,
+        )
+        if args.catalog and res.get("status") != "need_login":
+            with locked(args.run) as (run_p, st):
+                res["index"] = w.export_index(st, run_p, args.catalog)
+        output(res)
+        return 0 if res.get("ok") else 2
     if args.command == "extract-feishu":
         import subprocess, extract_feishu
         lark_bin = shutil.which("lark-cli") or "lark-cli"

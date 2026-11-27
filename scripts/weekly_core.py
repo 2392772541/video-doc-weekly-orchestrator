@@ -1073,7 +1073,7 @@ def index_rows(state, run, at=None):
                     collection = "pending"
         cand_url = it.get("candidate_url") or next((c.get("url") for c in it.get("candidates", []) if c.get("match_type") == "text_search_candidate"), "")
         screenshot = it.get("screenshot") or next((c.get("screenshot") for c in it.get("candidates", []) if c.get("screenshot")), "")
-        rows.append({"record_key": state["run_id"] + ":" + it["key"], "run_id": state["run_id"], "item_key": it["key"], "issue": state["issue"]["title"], "week": state["issue"]["week"], "section": it["section"], "subsection": it.get("subsection", ""), "title": it["title"], "author": it["author"], "platform": it["platform"], "id": it["id"] or next(iter(re.findall(r"BV[A-Za-z0-9]{10}|(?<![0-9])[0-9]{19}(?![0-9])", it["original_url"])), ""), "original_url": it["original_url"], "url": it["canonical_url"], "link_status": link_status, "collection": collection, "verified_at": verified_at, "candidate_url": cand_url, "screenshot": screenshot, "source": it["source"], "candidates": it["candidates"], "document_url": state.get("publication", {}).get("document_url", ""), "folder_name": state["targets"].get(it["platform"], {}).get("folder_name", ""), "folder_url": state["targets"].get(it["platform"], {}).get("folder_url", ""), "run_path": str(Path(run).resolve())})
+        rows.append({"record_key": state["run_id"] + ":" + it["key"], "run_id": state["run_id"], "item_key": it["key"], "issue": state["issue"]["title"], "week": state["issue"]["week"], "section": it["section"], "subsection": it.get("subsection", ""), "title": it["title"], "author": it["author"], "platform": it["platform"], "id": it["id"] or next(iter(re.findall(r"BV[A-Za-z0-9]{10}|(?<![0-9])[0-9]{19}(?![0-9])", it["original_url"])), ""), "original_url": it["original_url"], "url": it["canonical_url"], "link_status": link_status, "collection": collection, "verified_at": verified_at, "candidate_url": cand_url, "screenshot": screenshot, "source": it["source"], "candidates": it["candidates"], "document_url": state.get("publication", {}).get("document_url", ""), "companion_url": state.get("companion_transcript", {}).get("zhuanlu_url", ""), "folder_name": state["targets"].get(it["platform"], {}).get("folder_name", ""), "folder_url": state["targets"].get(it["platform"], {}).get("folder_url", ""), "run_path": str(Path(run).resolve())})
     return rows
 
 
@@ -1104,6 +1104,8 @@ def render_index_html(rows, destination):
         if r.get("screenshot"):
             links += ' <a rel="noreferrer" target="_blank" href="' + html.escape(r["screenshot"], quote=True) + '">查看录屏截图</a>'
         links += " " + safe_link(r["document_url"], "本期周报") + " " + safe_link(r["folder_url"], "收藏夹")
+        if r.get("companion_url"):
+            links += " " + safe_link(r["companion_url"], "伴读逐字稿")
         sec_label = r["section"] + ((" - " + r["subsection"]) if r.get("subsection") else "")
         fields = [r["issue"], sec_label, r["title"], r["author"], r["platform"], r["id"], label, r["verified_at"], r["folder_name"]]
         body.append('<tr><td>' + '</td><td>'.join(html.escape(str(x)) for x in fields) + '</td><td>' + links + '</td></tr>')
@@ -1143,7 +1145,7 @@ def clean_run_cache(target_dir, include_evidence=False, dry_run=False):
     temp_dir_names = {
         "timeline", "dense_frames", "tail_frames", "temp_crops",
         "p2_end_frames", "samples", "dense_p2_pre_end", "dense_p2_start",
-        "dense_gym", "dense_p1_end", "dense_song", "dense_ai"
+        "dense_gym", "dense_p1_end", "dense_song", "dense_ai", "_tmp_audio"
     }
 
     deleted_files = []
@@ -1173,8 +1175,9 @@ def clean_run_cache(target_dir, include_evidence=False, dry_run=False):
 
         if is_temp_dir or (include_evidence and is_evidence_screenshots):
             dir_had_deletes = False
+            allowed_exts = (".mp3", ".m4a", ".wav", ".tmp", ".part") if dir_name == "_tmp_audio" else (".jpg", ".png", ".jpeg")
             for f in files:
-                if f.lower().endswith((".jpg", ".png", ".jpeg")):
+                if f.lower().endswith(allowed_exts):
                     f_path = cur_dir / f
                     try:
                         sz = f_path.stat().st_size
